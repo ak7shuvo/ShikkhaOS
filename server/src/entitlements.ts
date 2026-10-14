@@ -88,8 +88,11 @@ export function entitlementOf(sub: SubscriptionRow | null, today: string): Entit
   return { ...base, level: 'blocked', status: 'suspended', reason: 'lapsed', warning: { code: 'BLOCKED', message: `Access suspended. Your data is preserved until at least ${retention}; contact Petra Software Solution.` } };
 }
 
-/** Which stored status best reflects an effective one (used by the sweeper for reporting). */
-export const storedStatusFor = (e: Entitlement, current: StoredStatus): StoredStatus => (current === 'suspended' ? 'suspended' : e.status === 'cancelled' ? 'cancelled' : e.status);
+/**
+ * Stored status best reflecting an effective one (sweeper reporting only). 'suspended' is reserved for MANUAL suspension,
+ * so a lapsed account is stored as 'expired' and a later payment can restore it without lifting a real suspension.
+ */
+export const storedStatusFor = (e: Entitlement, current: StoredStatus): StoredStatus => (current === 'suspended' || e.reason === 'manual_suspension' ? 'suspended' : e.status === 'suspended' ? 'expired' : e.status);
 
 /** New period when a payment is recorded. Renewal before the end extends seamlessly; after lapse it starts today. */
 export function renewalPeriod(currentEnd: string | null, today: string, months: number): { start: string; end: string } {

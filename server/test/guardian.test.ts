@@ -122,7 +122,7 @@ describe('guardian portal', () => {
     const link = await admin.post(`/students/${A.students[2]!.id}/guardians`, { guardian_id: created.body.id, relationship: 'parent' });
     expect(link.body.status).toBe('pending');
     const g3 = new (await import('./helpers.js')).Client(h.app);
-    expect((await g3.login('g3@ga.example.test', 'long-enough-password')).status).toBe(200);
+    expect((await g3.login('g3@ga.example.test', 'long-enough-password', A.code)).status).toBe(200);
     expect((await g3.get(`/guardian/students/${A.students[2]!.id}`)).status).toBe(404); // pending
     expect((await admin.post(`/student-guardians/${link.body.id}/verify`)).status).toBe(200);
     expect((await g3.get(`/guardian/students/${A.students[2]!.id}`)).status).toBe(200);

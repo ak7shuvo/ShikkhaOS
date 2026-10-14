@@ -153,8 +153,10 @@ describe('cross-tenant isolation: School A user vs School B record IDs', () => {
     for (const body of [{ status: 'archived' }, { code: 'hijack' }]) {
       expect((await adminA.patch('/school', body)).status).toBe(400);
     }
-    expect((await adminA.get('/platform/schools')).status).toBe(403);
-    expect((await adminA.req('PUT', `/platform/schools/${A.schoolId}/license`, { plan: 'x', status: 'active', starts_on: '2026-01-01' })).status).toBe(403);
+    // The platform API accepts only control-plane platform sessions; a school session is not one.
+    expect((await adminA.get('/platform/schools')).status).toBe(401);
+    expect((await adminA.patch(`/platform/schools/${A.schoolId}/status`, { status: 'suspended' })).status).toBe(401);
+    expect((await adminA.req('PUT', `/platform/schools/${A.schoolId}/branding`, { display_name: 'x' })).status).toBe(401);
   });
 
   it('audit trail is per school', async () => {

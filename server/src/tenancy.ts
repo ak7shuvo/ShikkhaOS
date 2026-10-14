@@ -164,6 +164,22 @@ export class TenantRouter {
     throw new TenantUnavailableError('TENANT_UNAVAILABLE', 'School database is unavailable');
   }
 
+  /**
+   * Runs a lookup on a school's pool and converts connectivity/credential failures into a typed, per-school
+   * unavailable error (dropping the pool so the next request reconnects with fresh registry data).
+   */
+  async guard<T>(entry: RegistryEntry, fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      const e = err as { code?: string };
+      const connectivity = ['ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'ECONNRESET'].includes(e.code ?? '') || /^(08|28|57)/.test(e.code ?? '') || e.code === '42501' || (err as Error).message?.includes('Connection terminated');
+      if (!connectivity) throw err;
+      await this.invalidate(entry.id);
+      throw new TenantUnavailableError('TENANT_UNAVAILABLE', 'School database is unavailable');
+    }
+  }
+
   async close(): Promise<void> {
     await this.invalidate();
   }

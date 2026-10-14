@@ -1,11 +1,19 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { audit } from '../audit.js';
-import { authz, parse, schoolTx } from '../context.js';
+import { authOf, authz, parse, schoolTx } from '../context.js';
+import { validateBranding } from '../branding.js';
+import { platformAudit } from '../registry.js';
 import { gradingBandsSchema } from '../grading.js';
 import { SCHOOL_ROLES } from '../rbac.js';
 import { PASSWORD_MIN_LENGTH, hashPassword } from '../passwords.js';
 import { AppError, notFound } from '../errors.js';
+
+const EXPORT_TABLES = [
+  'schools', 'school_memberships', 'academic_years', 'classes', 'sections', 'subjects', 'students', 'guardian_profiles', 'student_guardians',
+  'enrollments', 'teacher_assignments', 'grading_policies', 'exams', 'exam_subjects', 'result_sheets', 'marks', 'result_events', 'result_versions',
+  'published_results', 'audit_events',
+];
 
 const settingsSchema = z
   .object({
@@ -34,17 +42,40 @@ const profileBody = z
   .strict();
 
 export async function schoolRoutes(app: FastifyInstance): Promise<void> {
-  app.get('/school', { preHandler: authz(app, { perm: 'school.view' }) }, async (req) =>
-    schoolTx(app, req, async (tx, a) => {
-      const r = await tx.query(
-        `SELECT s.id, s.code, s.name, s.name_bn, s.logo_url, s.address, s.phone, s.email, s.settings, s.status,
-                l.status AS license_status, l.plan AS license_plan, l.ends_on AS license_ends_on
-           FROM schools s LEFT JOIN school_licenses l ON l.school_id = s.id WHERE s.id = $1`,
-        [a.schoolId],
-      );
+  app.get('/school', { preHandler: authz(app, { perm: 'school.view' }) }, async (req) => {
+    const school = await schoolTx(app, req, async (tx, a) => {
+      const r = await tx.query(`SELECT s.id, s.code, s.name, s.name_bn, s.logo_url, s.address, s.phone, s.email, s.settings, s.status FROM schools s WHERE s.id = $1`, [a.schoolId]);
       return r.rows[0];
-    }),
-  );
+    });
+    // Subscription and branding live in the control plane; the school id comes from the authenticated session.
+    const a = authOf(req);
+    const e = a.entitlement;
+    const branding = (await app.deps.control.query(`SELECT display_name, logo_url, primary_color, accent_color FROM school_branding WHERE school_id = $1`, [a.entry.id])).rows[0] ?? null;
+    return { ...school, subscription: { level: e.level, status: e.status, warning: e.warning, full_access_until: e.full_access_until, read_only_until: e.read_only_until, retention_until: e.retention_until }, branding };
+  });
+
+  // School admins manage their own branding; the school is the authenticated one, never a request parameter.
+  app.put('/school/branding', { preHandler: authz(app, { perm: 'school.manage' }) }, async (req) => {
+    const a = authOf(req);
+    const b = validateBranding(req.body);
+    const r = await app.deps.control.query(`UPDATE school_branding SET display_name = $2, logo_url = $3, primary_color = $4, accent_color = $5 WHERE school_id = $1 RETURNING display_name, logo_url, primary_color, accent_color`, [a.entry.id, b.display_name, b.logo_url, b.primary_color, b.accent_color]);
+    await schoolTx(app, req, (tx, x) => audit(tx, { schoolId: x.schoolId, actorUserId: x.userId, action: 'branding.update', entityType: 'branding', entityId: x.schoolId }));
+    await platformAudit(app.deps.control, { actorId: null, schoolId: a.entry.id, action: 'branding.update.by_school_admin', entityType: 'branding', entityId: a.entry.id, metadata: { user_id: a.userId } });
+    return r.rows[0];
+  });
+
+  // Data export: allowed while the subscription is in read-only mode (GET). Excludes credentials and sessions.
+  app.get('/school/export', { preHandler: authz(app, { perm: 'school.manage' }) }, async (req, reply) => {
+    const data = await schoolTx(app, req, async (tx, a) => {
+      const out: Record<string, unknown[]> = {};
+      for (const t of EXPORT_TABLES) out[t] = (await tx.query(`SELECT to_jsonb(x) AS r FROM ${t} x ORDER BY 1`)).rows.map((r) => r.r);
+      out.users = (await tx.query(`SELECT jsonb_build_object('id', u.id, 'email', u.email, 'full_name', u.full_name, 'status', u.status, 'preferred_language', u.preferred_language, 'created_at', u.created_at) AS r FROM users u ORDER BY u.email`)).rows.map((r) => r.r);
+      await audit(tx, { schoolId: a.schoolId, actorUserId: a.userId, action: 'school.export', entityType: 'school', entityId: a.schoolId });
+      return out;
+    });
+    reply.header('Content-Disposition', `attachment; filename="${authOf(req).entry.slug}-export.json"`);
+    return { exported_at: new Date().toISOString(), school: authOf(req).entry.slug, format: 1, tables: data };
+  });
 
   // Platform-level fields (code, status, licence) are NOT editable here.
   app.patch('/school', { preHandler: authz(app, { perm: 'school.manage' }) }, async (req) => {

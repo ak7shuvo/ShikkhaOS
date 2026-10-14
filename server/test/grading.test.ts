@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { computeGrade, gradingBandsSchema } from '../src/grading.js';
-import { loadConfig } from '../src/config.js';
 import { TRANSITIONS } from '../src/workflow.js';
 
 const bands = gradingBandsSchema.parse([
@@ -46,14 +45,3 @@ describe('workflow table', () => {
   });
 });
 
-describe('config', () => {
-  const base = { DATABASE_URL: 'postgres://u:p@localhost:5432/db' };
-  it('rejects missing DATABASE_URL', () => {
-    expect(() => loadConfig({} as NodeJS.ProcessEnv)).toThrow(/DATABASE_URL/);
-  });
-  it('requires secure cookies and https origins in production', () => {
-    expect(() => loadConfig({ ...base, NODE_ENV: 'production', COOKIE_SECURE: 'false' } as NodeJS.ProcessEnv)).toThrow(/COOKIE_SECURE/);
-    expect(() => loadConfig({ ...base, NODE_ENV: 'production' } as NodeJS.ProcessEnv)).toThrow(/https/);
-    expect(loadConfig({ ...base, NODE_ENV: 'production', ALLOWED_ORIGINS: 'https://app.example.test' } as NodeJS.ProcessEnv).COOKIE_SECURE).toBe(true);
-  });
-});

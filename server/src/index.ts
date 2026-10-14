@@ -3,7 +3,9 @@ import { loadConfig } from './config.js';
 import { assertRestrictedRole, createPool } from './db.js';
 
 const config = loadConfig();
-const pool = createPool(config.DATABASE_URL);
-await assertRestrictedRole(pool);
-const app = await buildApp(config, pool);
+const control = createPool(config.CONTROL_DATABASE_URL);
+await assertRestrictedRole(control);
+const sharedPool = config.SHARED_DATABASE_URL ? createPool(config.SHARED_DATABASE_URL) : undefined;
+if (sharedPool) await assertRestrictedRole(sharedPool);
+const app = await buildApp(config, control, { sharedPool });
 await app.listen({ port: config.PORT, host: config.HOST });
