@@ -36,6 +36,9 @@ export interface Entitlement {
   warning: null | { code: 'RENEWAL_OVERDUE' | 'READ_ONLY' | 'BLOCKED'; message: string };
 }
 
+/** Documented data-retention policy: the retention window after a subscription ends is never shorter than this (also a DB CHECK). */
+export const MIN_RETENTION_DAYS = 90;
+
 const MS = 86_400_000;
 const parse = (d: string): number => {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d);
@@ -78,7 +81,8 @@ export function entitlementOf(sub: SubscriptionRow | null, today: string): Entit
   const d = daysBetween(sub.period_end, today);
   const fullUntil = addDays(sub.period_end, sub.grace_days);
   const roUntil = addDays(fullUntil, sub.readonly_days);
-  const retention = addDays(sub.period_end, sub.retention_days);
+  // A stored value below the minimum (e.g. written around the API) can never shorten the window.
+  const retention = addDays(sub.period_end, Math.max(sub.retention_days, MIN_RETENTION_DAYS));
   // Deletion is only ever eligible after retention AND with no legal hold; it still needs an explicit offboarding.
   const base = {
     days_past_end: d,

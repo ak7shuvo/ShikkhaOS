@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { PLATFORM_COOKIE, parse, platformAuthz, platformOf } from '../context.js';
 import { AppError, notFound } from '../errors.js';
-import { entitlementOf, storedStatusFor, type SubscriptionRow } from '../entitlements.js';
+import { MIN_RETENTION_DAYS, entitlementOf, storedStatusFor, type SubscriptionRow } from '../entitlements.js';
 import { burnPasswordCheck, hashToken, newSessionToken, verifyPassword } from '../passwords.js';
 import { platformAudit, recordPayment, registerSchool, SLUG_RE } from '../registry.js';
 import { REGISTRY_COLUMNS } from '../tenancy.js';
@@ -291,17 +291,25 @@ export async function platformRoutes(app: FastifyInstance): Promise<void> {
         .object({
           grace_days: z.number().int().min(0).max(90),
           readonly_days: z.number().int().min(0).max(365),
-          retention_days: z.number().int().min(0).max(3650),
+          retention_days: z.number().int().min(MIN_RETENTION_DAYS, `retention_days cannot be below ${MIN_RETENTION_DAYS} days`).max(3650),
           legal_hold: z.boolean(),
         })
         .partial()
         .refine((x) => Object.keys(x).length > 0, 'nothing to update'),
       req.body,
     );
-    await subOf(sid);
+    const before = await subOf(sid);
     const cols = Object.keys(b);
     await control.query(`UPDATE subscriptions SET ${cols.map((c, i) => `${c} = $${i + 2}`).join(', ')} WHERE school_id = $1`, [sid, ...Object.values(b)]);
-    await platformAudit(control, { actorId: platformOf(req).adminId, schoolId: sid, action: 'subscription.terms', entityType: 'subscription', metadata: b });
+    // Every policy change records what it replaced, so a reduction of grace/read-only windows or a legal-hold release is reviewable.
+    const previous = Object.fromEntries(cols.map((c) => [c, before[c]]));
+    await platformAudit(control, {
+      actorId: platformOf(req).adminId,
+      schoolId: sid,
+      action: 'subscription.terms',
+      entityType: 'subscription',
+      metadata: { requested: b, previous },
+    });
     entitlements.invalidate(sid);
     return subView(await subOf(sid));
   });

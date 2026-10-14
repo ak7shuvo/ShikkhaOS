@@ -8,13 +8,23 @@ import { writeBuildProfile } from '../build-profile.js';
 import { loadConfig } from '../config.js';
 import { createPool } from '../db.js';
 import { todayIn } from '../entitlements.js';
+import { tlsOptions } from '../tls.js';
 import { exportSchool, finalizeOffboarding, resetSchoolAccountPassword, restoreDump, startOffboarding } from '../operations.js';
 import { hashPassword, PASSWORD_MIN_LENGTH } from '../passwords.js';
+import { DEFAULT_MAINTENANCE_DBS, checkDatabaseAcls, hardenDatabaseAccess, type AclSpec } from '../db-access.js';
 import { checkSchoolHealth, migrateSchool, provisionSchool, reencryptAllSecrets, rotateSchoolSecret, urlForDb, type ProvisionDeps } from '../provisioning.js';
 import { registerSchool } from '../registry.js';
 import { SecretBox, generateMasterKey, loadMasterKeys } from '../secrets.js';
 import { seedSchool } from '../seed-data.js';
-import { importPlatformAdmins, migrateSharedToDedicated, rollbackToShared, type MigrationDeps } from '../shared-migration.js';
+import {
+  importPlatformAdmins,
+  inspectMaintenance,
+  migrateSharedToDedicated,
+  recoverMaintenance,
+  rollbackToShared,
+  type MigrationDeps,
+  type RecoveryAction,
+} from '../shared-migration.js';
 import { sweepSubscriptions } from '../subscriptions.js';
 import { REGISTRY_COLUMNS, type RegistryEntry } from '../tenancy.js';
 
@@ -35,14 +45,39 @@ if (cmd === 'generate-master-key') {
 }
 if (!cmd || cmd === 'help')
   die(
-    'commands: register provision migrate health rotate-secret reencrypt-secrets sweep export restore offboard-start offboard-finalize admin-reset migrate-to-dedicated rollback-to-shared import-platform-admins platform-admin-create build-profile seed-demo generate-master-key',
+    'commands: register provision migrate health rotate-secret reencrypt-secrets sweep export restore offboard-start offboard-finalize admin-reset migrate-to-dedicated rollback-to-shared import-platform-admins platform-admin-create build-profile seed-demo generate-master-key generate-signing-key harden-db-access migration-inspect migration-recover',
   );
 
 const config = loadConfig();
-const control = createPool(config.CONTROL_DATABASE_URL);
+const control = createPool(config.CONTROL_DATABASE_URL, tlsOptions(config.CONTROL_DB_SSL, config.DB_SSL_CA_FILE));
 const adminUrl = process.env.PROVISIONER_DATABASE_URL ?? die('PROVISIONER_DATABASE_URL is required');
 const secrets = new SecretBox(loadMasterKeys(config));
-const deps: ProvisionDeps = { control, secrets, adminUrl };
+const signingKey = process.env.PETRA_BACKUP_SIGNING_KEY ? Buffer.from(process.env.PETRA_BACKUP_SIGNING_KEY, 'base64') : undefined;
+if (signingKey && signingKey.length !== 32) die('PETRA_BACKUP_SIGNING_KEY must be base64 of exactly 32 bytes');
+const deps: ProvisionDeps = { control, secrets, adminUrl, backupSigningKey: signingKey };
+
+const dbNameOf = (url: string | undefined) => (url ? decodeURIComponent(new URL(url).pathname.slice(1)) : undefined);
+/** Which databases are protected from application roles. Maintenance databases can be skipped with --skip-maintenance. */
+async function aclSpec(): Promise<AclSpec> {
+  const schools = (await control.query(`SELECT db_name, db_role FROM schools WHERE db_name IS NOT NULL AND db_role IS NOT NULL AND status NOT IN ('archived')`))
+    .rows;
+  return {
+    controlDb: dbNameOf(config.CONTROL_DATABASE_URL),
+    sharedDb: dbNameOf(config.SHARED_DATABASE_URL),
+    maintenanceDbs: flag('skip-maintenance') ? [] : DEFAULT_MAINTENANCE_DBS,
+    operatorRoles: (process.env.PETRA_OPERATOR_ROLES ?? '')
+      .split(',')
+      .map((r) => r.trim())
+      .filter(Boolean),
+    schools,
+  };
+}
+async function hardenOrFail(): Promise<void> {
+  const r = await hardenDatabaseAccess(adminUrl, await aclSpec());
+  for (const f of r.failed)
+    console.error(`ACL NOT APPLIED on "${f.database}": ${f.error}\n  A database owner/superuser must run:\n    ${f.sql.join(';\n    ')};`);
+  if (r.failed.length) throw new Error('database access control could not be fully applied');
+}
 const today = todayIn(config.BILLING_TIMEZONE);
 
 async function school(ref: string | undefined): Promise<RegistryEntry> {
@@ -73,6 +108,7 @@ try {
     }
     case 'provision': {
       const e = await school(positional[0]);
+      if (!flag('skip-acl')) await hardenOrFail(); // idempotent; provisioning's health check fails closed if cluster-level ACLs are missing
       const r = await provisionSchool(deps, e.id);
       console.log(`${e.slug}: ${r.step}`);
       if (r.adminInitialPassword)
@@ -96,7 +132,25 @@ try {
         console.log(`${h.ok ? 'OK  ' : 'FAIL'} ${e.slug} schema=${h.schema_version ?? '-'}${h.ok ? '' : ' ' + JSON.stringify(h.checks.filter((c) => !c.ok))}`);
         if (!h.ok) bad++;
       }
-      if (bad) process.exitCode = 2;
+      const acl = await checkDatabaseAcls(adminUrl, await aclSpec());
+      console.log(
+        `${acl.ok ? 'OK  ' : 'FAIL'} cluster-acl ${acl.findings.map((f) => `${f.database}:${f.public_connect ? 'PUBLIC-CONNECT' : 'closed'}`).join(' ')}${acl.ok ? '' : ' (run: npm run petra -- harden-db-access)'}`,
+      );
+      if (bad || !acl.ok) process.exitCode = 2;
+      break;
+    }
+    case 'harden-db-access': {
+      await hardenOrFail();
+      const acl = await checkDatabaseAcls(adminUrl, await aclSpec());
+      console.log(
+        acl.ok
+          ? 'PUBLIC CONNECT is revoked on every protected database.'
+          : `STILL OPEN: ${acl.findings
+              .filter((f) => !f.ok)
+              .map((f) => f.database)
+              .join(', ')}`,
+      );
+      if (!acl.ok) process.exitCode = 2;
       break;
     }
     case 'rotate-secret': {
@@ -108,7 +162,11 @@ try {
       break;
     }
     case 'reencrypt-secrets':
-      console.log(`Re-encrypted ${(await reencryptAllSecrets(control, secrets)).updated} credential(s) with key "${secrets.currentKeyId}".`);
+      {
+        const r = await reencryptAllSecrets(control, secrets);
+        console.log(`Re-encrypted ${r.updated} school(s) with key "${secrets.currentKeyId}"; ${r.skipped} skipped (changed concurrently — run again).`);
+        if (r.skipped) process.exitCode = 2;
+      }
       break;
     case 'sweep': {
       const r = await sweepSubscriptions(control, today);
@@ -125,7 +183,11 @@ try {
       const [manifest, target] = positional;
       if (!manifest || !target) die('usage: restore <manifest.json> <new-database-name>');
       const r = await restoreDump(deps, path.resolve(manifest), target);
-      console.log(r.ok ? `Restored into "${target}" and verified against the manifest.` : `Restored but MISMATCHED tables: ${r.mismatches.join(', ')}`);
+      console.log(
+        r.ok
+          ? `Restored into "${target}"; row counts and content digests match the manifest (signature: ${r.signature}).`
+          : `Restore did NOT verify: mismatched tables ${r.mismatches.join(', ')}. Scratch database ${r.cleaned_up ? 'was dropped' : 'was kept'}.`,
+      );
       if (!r.ok) process.exitCode = 2;
       break;
     }
@@ -157,6 +219,20 @@ try {
       const e = await school(positional[0]);
       const r = await migrateSharedToDedicated(mdeps(), e.id, { resetTarget: flag('reset-target') });
       console.log(`${e.slug}: migrated. Tables verified: ${r.tables.length}, users: ${r.users}. Shared copy retained for rollback.`);
+      break;
+    }
+    case 'migration-inspect': {
+      const e = await school(positional[0]);
+      console.log(JSON.stringify(await inspectMaintenance(mdeps(), e.id), null, 2));
+      break;
+    }
+    case 'migration-recover': {
+      const e = await school(positional[0]);
+      const action = positional[1] as RecoveryAction | undefined;
+      if (!action || !['reopen-shared', 'complete-cutover', 'reopen-dedicated'].includes(action))
+        die('usage: migration-recover <slug> <reopen-shared|complete-cutover|reopen-dedicated>  (run migration-inspect first)');
+      const r = await recoverMaintenance(mdeps(), e.id, action);
+      console.log(`${e.slug}: ${action} done. ${r.reason}`);
       break;
     }
     case 'rollback-to-shared': {

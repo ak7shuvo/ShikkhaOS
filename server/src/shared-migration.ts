@@ -17,6 +17,8 @@ export interface MigrationDeps extends ProvisionDeps {
   afterTable?: (table: string) => void | Promise<void>;
   /** Test hook: runs after copy, before verification. */
   beforeVerify?: (target: pg.Client) => void | Promise<void>;
+  /** Test hook: runs after the copy was committed and before the registry cut-over (a crash here is the nastiest interruption). */
+  afterCommit?: () => void | Promise<void>;
 }
 
 interface TableSpec {
@@ -84,17 +86,62 @@ async function digest(c: pg.Client, table: string, where: string, order: string,
   return r.rows[0];
 }
 
+export class MigrationBusyError extends Error {
+  constructor() {
+    super('another migration or recovery holds the lock for this school');
+  }
+}
+
+/**
+ * Per-school advisory lock held on a dedicated control-plane connection for the WHOLE lifecycle (provisioning of the
+ * target, maintenance window, copy, verification, cut-over, recovery, rollback). Session-level, so it is released
+ * automatically if the process dies. Fails fast instead of waiting.
+ */
+async function withMigrationLock<T>(control: Db, schoolId: string, fn: () => Promise<T>): Promise<T> {
+  const conn = await control.connect();
+  try {
+    const got = (await conn.query(`SELECT pg_try_advisory_lock(hashtext($1)) AS ok`, [`migrate:${schoolId}`])).rows[0].ok as boolean;
+    if (!got) throw new MigrationBusyError();
+    try {
+      return await fn();
+    } finally {
+      await conn.query(`SELECT pg_advisory_unlock(hashtext($1))`, [`migrate:${schoolId}`]).catch(() => undefined);
+    }
+  } finally {
+    conn.release();
+  }
+}
+
+export interface CopyVerification {
+  ok: boolean;
+  tables: { table: string; rows: number; match: boolean }[];
+  users_match: boolean;
+  mismatched: string[];
+}
+
+/** Compares the shared source (school slice) with the dedicated target: row counts and content digests per table, plus users. */
+export async function verifyCopy(src: pg.Client, dst: pg.Client, schoolId: string): Promise<CopyVerification> {
+  const tables: CopyVerification['tables'] = [];
+  for (const t of COPY_ORDER) {
+    const a = await digest(src, t.table, t.where, t.order, [schoolId]);
+    const b = await digest(dst, t.table, '$1::uuid IS NOT NULL', t.order, [schoolId]);
+    tables.push({ table: t.table, rows: b.n, match: a.n === b.n && a.md5 === b.md5 });
+  }
+  const uSrc = (await src.query(`SELECT count(*)::int AS n FROM (${usersSql}) u`, [schoolId])).rows[0].n;
+  const uDst = (await dst.query(`SELECT count(*)::int AS n FROM users`)).rows[0].n;
+  const usersMatch = uSrc === uDst;
+  const mismatched = tables.filter((t) => !t.match).map((t) => t.table);
+  if (!usersMatch) mismatched.push('users');
+  return { ok: mismatched.length === 0, tables, users_match: usersMatch, mismatched };
+}
+
 export interface MigrationReport {
   schoolId: string;
   tables: { table: string; rows: number; match: boolean }[];
   users: number;
 }
 
-export async function migrateSharedToDedicated(
-  d: MigrationDeps,
-  schoolId: string,
-  opts: { actorId?: string | null; resetTarget?: boolean } = {},
-): Promise<MigrationReport> {
+async function migrateLocked(d: MigrationDeps, schoolId: string, opts: { actorId?: string | null; resetTarget?: boolean }): Promise<MigrationReport> {
   let entry = await loadEntry(d.control, schoolId);
   if (entry.db_mode !== 'shared') throw new Error('school is not in shared mode');
   if (entry.status !== 'active') throw new Error(`school must be active to migrate (is "${entry.status}")`);
@@ -109,10 +156,11 @@ export async function migrateSharedToDedicated(
 
   const src = new pg.Client({ connectionString: d.sharedOwnerUrl });
   const dst = new pg.Client({ connectionString: urlForDb(d.adminUrl, dbNameFor(schoolId)) });
-  await src.connect();
-  await dst.connect();
   let guardDisabled = false;
+  let committed = false;
   try {
+    await src.connect();
+    await dst.connect();
     await src.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     if (!(await src.query(`SELECT 1 FROM schools WHERE id = $1`, [schoolId])).rowCount) throw new Error('school not found in the shared database');
 
@@ -160,31 +208,16 @@ export async function migrateSharedToDedicated(
     await d.beforeVerify?.(dst);
 
     // 3. Verify row counts and content digests table by table.
-    let allOk = true;
-    for (const t of COPY_ORDER) {
-      const a = await digest(src, t.table, t.where, t.order, [schoolId]);
-      const b = await digest(dst, t.table, '$1::uuid IS NOT NULL', t.order, [schoolId]);
-      const match = a.n === b.n && a.md5 === b.md5;
-      allOk &&= match;
-      report.tables.push({ table: t.table, rows: b.n, match });
-    }
-    const uSrc = (await src.query(`SELECT count(*)::int AS n FROM (${usersSql}) u`, [schoolId])).rows[0].n;
-    const uDst = (await dst.query(`SELECT count(*)::int AS n FROM users`)).rows[0].n;
-    if (uSrc !== uDst) allOk = false;
-    if (!allOk)
-      throw new Error(
-        `verification failed: ${
-          report.tables
-            .filter((t) => !t.match)
-            .map((t) => t.table)
-            .join(', ') || 'users'
-        }`,
-      );
+    const v = await verifyCopy(src, dst, schoolId);
+    report.tables = v.tables;
+    if (!v.ok) throw new Error(`verification failed: ${v.mismatched.join(', ')}`);
 
     await dst.query('ALTER TABLE marks ENABLE TRIGGER marks_guard_trg');
     guardDisabled = false;
     await dst.query('COMMIT');
+    committed = true;
     await src.query('ROLLBACK');
+    await d.afterCommit?.();
 
     // 4. Cutover: the registry flips atomically. The shared data is left untouched as the rollback copy.
     await d.control.query(
@@ -204,10 +237,11 @@ export async function migrateSharedToDedicated(
     await dst.query('ROLLBACK').catch(() => undefined);
     if (guardDisabled) await dst.query('ALTER TABLE marks ENABLE TRIGGER marks_guard_trg').catch(() => undefined);
     await src.query('ROLLBACK').catch(() => undefined);
-    // Still shared and serving: reopen it. The partial copy was rolled back with the transaction.
+    // Still shared and serving: reopen it. Before the commit the partial copy was rolled back with the transaction; after the commit
+    // (cut-over failed) the complete copy stays in the target, and the next attempt needs resetTarget or `petra migration-recover`.
     await d.control.query(`UPDATE schools SET status = 'active', provisioning_error = $2 WHERE id = $1 AND db_mode = 'shared'`, [
       schoolId,
-      `shared→dedicated migration failed: ${(err as Error).message}`.slice(0, 500),
+      `shared→dedicated migration failed${committed ? ' after the copy was committed (target kept)' : ''}: ${(err as Error).message}`.slice(0, 500),
     ]);
     throw err;
   } finally {
@@ -216,14 +250,23 @@ export async function migrateSharedToDedicated(
   }
 }
 
+/** See the file header. Holds the per-school migration lock from the first step to the cut-over; a second concurrent call fails with MigrationBusyError. */
+export async function migrateSharedToDedicated(
+  d: MigrationDeps,
+  schoolId: string,
+  opts: { actorId?: string | null; resetTarget?: boolean } = {},
+): Promise<MigrationReport> {
+  return withMigrationLock(d.control, schoolId, () => migrateLocked(d, schoolId, opts));
+}
+
 /**
  * Returns a migrated school to the shared database. Refused if the dedicated database has accepted writes since
  * cutover (they would be lost), unless acceptDataLoss is given explicitly.
  */
-export async function rollbackToShared(
+async function rollbackLocked(
   d: MigrationDeps,
   schoolId: string,
-  opts: { acceptDataLoss?: boolean; actorId?: string | null } = {},
+  opts: { acceptDataLoss?: boolean; actorId?: string | null },
 ): Promise<{ writes_since_cutover: number }> {
   const entry = await loadEntry(d.control, schoolId);
   if (entry.db_mode !== 'dedicated' || !entry.migrated_from_shared_at) throw new Error('school was not migrated from the shared database');
@@ -253,6 +296,14 @@ export async function rollbackToShared(
   }
 }
 
+export async function rollbackToShared(
+  d: MigrationDeps,
+  schoolId: string,
+  opts: { acceptDataLoss?: boolean; actorId?: string | null } = {},
+): Promise<{ writes_since_cutover: number }> {
+  return withMigrationLock(d.control, schoolId, () => rollbackLocked(d, schoolId, opts));
+}
+
 /** Copies active Phase 1 platform administrators from the shared database into the control plane (credentials move; accounts are not duplicated). */
 export async function importPlatformAdmins(control: Db, sharedOwnerUrl: string): Promise<{ imported: number }> {
   const src = new pg.Client({ connectionString: sharedOwnerUrl });
@@ -272,4 +323,170 @@ export async function importPlatformAdmins(control: Db, sharedOwnerUrl: string):
   } finally {
     await src.end();
   }
+}
+
+// ------------------------------------------------------------------------------------------------ maintenance recovery
+export type RecoveryAction = 'reopen-shared' | 'complete-cutover' | 'reopen-dedicated';
+
+export interface MaintenanceInspection {
+  slug: string;
+  status: string;
+  db_mode: 'shared' | 'dedicated';
+  /** False when another migration/recovery is running (then nothing else is inspected or allowed). */
+  lock_free: boolean;
+  shared_source_intact: boolean;
+  target: { exists: boolean; has_school_row: boolean };
+  /** Result of comparing source and target (only when both exist and the target holds the school). */
+  verification: { all_match: boolean; mismatched: string[] } | null;
+  /** The only actions recoverMaintenance will accept right now. */
+  allowed_actions: RecoveryAction[];
+  recommendation: RecoveryAction | 'not_in_maintenance' | 'migration_in_progress' | 'manual_review';
+  reason: string;
+}
+
+async function inspectLocked(d: MigrationDeps, schoolId: string): Promise<MaintenanceInspection> {
+  const e = await loadEntry(d.control, schoolId);
+  const base = {
+    slug: e.slug,
+    status: e.status,
+    db_mode: e.db_mode,
+    lock_free: true,
+    shared_source_intact: false,
+    target: { exists: false, has_school_row: false },
+    verification: null,
+    allowed_actions: [] as RecoveryAction[],
+  };
+  if (e.status !== 'maintenance')
+    return { ...base, recommendation: 'not_in_maintenance', reason: `school is "${e.status}", not in maintenance; nothing to recover` };
+
+  const src = new pg.Client({ connectionString: d.sharedOwnerUrl });
+  await src.connect();
+  const admin = new pg.Client({ connectionString: d.adminUrl });
+  await admin.connect();
+  let dst: pg.Client | null = null;
+  try {
+    base.shared_source_intact = ((await src.query(`SELECT 1 FROM schools WHERE id = $1`, [schoolId])).rowCount ?? 0) > 0;
+    const dbName = e.db_name ?? dbNameFor(schoolId);
+    base.target.exists = ((await admin.query(`SELECT 1 FROM pg_database WHERE datname = $1`, [dbName])).rowCount ?? 0) > 0;
+    if (base.target.exists) {
+      dst = new pg.Client({ connectionString: urlForDb(d.adminUrl, dbName) });
+      await dst.connect();
+      base.target.has_school_row = ((await dst.query(`SELECT 1 FROM schools WHERE id = $1`, [schoolId]).catch(() => ({ rowCount: 0 }))).rowCount ?? 0) > 0;
+    }
+    if (e.db_mode === 'dedicated') {
+      // Cut-over already recorded; the school was left in maintenance (e.g. a rollback or an operator action was interrupted).
+      return base.target.has_school_row
+        ? {
+            ...base,
+            allowed_actions: ['reopen-dedicated'],
+            recommendation: 'reopen-dedicated',
+            reason: 'registry already points at the dedicated database and it holds the school; reopening discards nothing',
+          }
+        : {
+            ...base,
+            recommendation: 'manual_review',
+            reason: 'registry points at a dedicated database that is missing or empty; restore from backup before reopening',
+          };
+    }
+    if (!base.shared_source_intact) {
+      return {
+        ...base,
+        recommendation: 'manual_review',
+        reason: 'the school is missing from the shared database; neither reopening nor cut-over is safe without a manual review',
+      };
+    }
+    if (base.target.has_school_row && dst) {
+      await src.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      const v = await verifyCopy(src, dst, schoolId);
+      await src.query('ROLLBACK');
+      const verification = { all_match: v.ok, mismatched: v.mismatched };
+      if (v.ok) {
+        return {
+          ...base,
+          verification,
+          allowed_actions: ['complete-cutover', 'reopen-shared'],
+          recommendation: 'complete-cutover',
+          reason: 'a complete, verified copy exists in the target (interruption after the commit, before the registry cut-over); both actions lose nothing',
+        };
+      }
+      return {
+        ...base,
+        verification,
+        allowed_actions: ['reopen-shared'],
+        recommendation: 'reopen-shared',
+        reason:
+          'the target does not match the shared source; the shared database is still authoritative (cut-over was never recorded). Reopen on shared and re-run the migration with --reset-target',
+      };
+    }
+    return {
+      ...base,
+      allowed_actions: ['reopen-shared'],
+      recommendation: 'reopen-shared',
+      reason: base.target.exists
+        ? 'the target holds no school data (the copy never committed); the shared database is authoritative'
+        : 'no dedicated database exists yet; the shared database is authoritative',
+    };
+  } finally {
+    await src.end().catch(() => undefined);
+    await admin.end().catch(() => undefined);
+    await dst?.end().catch(() => undefined);
+  }
+}
+
+/** Read-only report of what state a school left in `maintenance` is really in. Changes nothing. */
+export async function inspectMaintenance(d: MigrationDeps, schoolId: string): Promise<MaintenanceInspection> {
+  try {
+    return await withMigrationLock(d.control, schoolId, () => inspectLocked(d, schoolId));
+  } catch (e) {
+    if (!(e instanceof MigrationBusyError)) throw e;
+    const s = await loadEntry(d.control, schoolId);
+    return {
+      slug: s.slug,
+      status: s.status,
+      db_mode: s.db_mode,
+      lock_free: false,
+      shared_source_intact: false,
+      target: { exists: false, has_school_row: false },
+      verification: null,
+      allowed_actions: [],
+      recommendation: 'migration_in_progress',
+      reason: 'another migration or recovery holds the lock; wait for it to finish',
+    };
+  }
+}
+
+/**
+ * Explicitly recovers a school left in `maintenance`. The caller names the action; it is executed only if the CURRENT, freshly
+ * inspected state allows it (inspection and action run under the same per-school lock). Nothing is ever deleted or overwritten:
+ * `reopen-*` only change the registry status, `complete-cutover` additionally records the dedicated mode after a full re-verification.
+ */
+export async function recoverMaintenance(
+  d: MigrationDeps,
+  schoolId: string,
+  action: RecoveryAction,
+  actorId: string | null = null,
+): Promise<MaintenanceInspection> {
+  return withMigrationLock(d.control, schoolId, async () => {
+    const inspection = await inspectLocked(d, schoolId);
+    if (!inspection.allowed_actions.includes(action)) {
+      throw new Error(`action "${action}" is not allowed: ${inspection.reason} (allowed: ${inspection.allowed_actions.join(', ') || 'none'})`);
+    }
+    if (action === 'complete-cutover') {
+      await d.control.query(
+        `UPDATE schools SET db_mode = 'dedicated', status = 'active', migrated_from_shared_at = now(), provisioning_error = NULL WHERE id = $1 AND db_mode = 'shared' AND status = 'maintenance'`,
+        [schoolId],
+      );
+    } else {
+      await d.control.query(`UPDATE schools SET status = 'active', provisioning_error = NULL WHERE id = $1 AND status = 'maintenance'`, [schoolId]);
+    }
+    await platformAudit(d.control, {
+      actorId,
+      schoolId,
+      action: `school.maintenance_recovered.${action}`,
+      entityType: 'school',
+      entityId: schoolId,
+      metadata: { inspection },
+    });
+    return inspection;
+  });
 }

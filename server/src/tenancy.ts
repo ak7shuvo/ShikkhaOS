@@ -1,6 +1,7 @@
 import pg from 'pg';
 import { assertRestrictedRole, type Db } from './db.js';
 import { SecretBox } from './secrets.js';
+import type { TlsOptions } from './tls.js';
 
 export type SchoolStatus = 'requested' | 'provisioning' | 'active' | 'maintenance' | 'suspended' | 'offboarding' | 'archived' | 'failed';
 
@@ -54,7 +55,7 @@ export class TenantRouter {
   constructor(
     private control: Db,
     private secrets: SecretBox,
-    private opts: { sharedPool?: Db; maxPools: number; poolMax: number; cacheMs: number; ssl: boolean },
+    private opts: { sharedPool?: Db; maxPools: number; poolMax: number; cacheMs: number; ssl: false | TlsOptions },
   ) {}
 
   private async load(key: 'id' | 'slug', value: string): Promise<RegistryEntry | null> {
@@ -122,7 +123,7 @@ export class TenantRouter {
       password,
       max: this.opts.poolMax,
       idleTimeoutMillis: 30_000,
-      ...(this.opts.ssl ? { ssl: true } : {}),
+      ...(this.opts.ssl ? { ssl: this.opts.ssl } : {}),
     });
   }
 

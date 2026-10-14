@@ -219,7 +219,10 @@ describe('guarded setup on the disposable cluster', () => {
     }, env.markerUrl);
 
     const plan = await cleanupOwnedObjects({ adminUrl: env.adminUrl, markerUrl: env.markerUrl, controlOwner: guardOwnerUrl });
-    expect(plan.databases.sort()).toEqual([OWNED_DB, OWNED_SCRATCH, OWNED_VERIFY].sort());
+    // Other test files record their own (usually already dropped) scratch names in the ledger; those are legitimately part of the plan.
+    const mine = [OWNED_DB, OWNED_SCRATCH, OWNED_VERIFY];
+    for (const m of mine) expect(plan.databases).toContain(m);
+    expect(plan.databases.filter((x) => !mine.includes(x)).every((x) => /^petra_test_scratch_[a-z0-9_]+$/.test(x))).toBe(true);
 
     const d = await dbs();
     const r = await roles();

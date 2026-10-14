@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import pg from 'pg';
+import { DEFAULT_MAINTENANCE_DBS, hardenDatabaseAccess } from '../src/db-access.js';
 import { CONTROL_MIGRATIONS_DIR, migrate, setupRole } from '../src/migrate.js';
 import { MARKER_DB, assertClusterMarker, planCleanup, validateTestEnvironment, UnsafeTestEnvironmentError, type ValidatedTestEnv } from './safety.js';
 
@@ -62,6 +63,10 @@ export async function runSetup(env: NodeJS.ProcessEnv): Promise<void> {
   });
   await setupRole(v.adminUrl, 'shikkha_app', pw(v.sharedApp));
   await setupRole(v.adminUrl, 'petra_control_app', pw(v.controlApp));
+  // Cluster-level access control: nobody but the intended roles may CONNECT to the control/shared/maintenance/marker databases
+  // (the schema migrations below re-apply the control/shared part; school databases are hardened by provisioning).
+  const acl = await hardenDatabaseAccess(v.adminUrl, { controlDb: v.controlDb, sharedDb: v.sharedDb, maintenanceDbs: [...DEFAULT_MAINTENANCE_DBS, MARKER_DB] });
+  if (acl.failed.length) throw new Error(`cannot apply database ACLs on the test cluster: ${acl.failed.map((f) => f.database).join(', ')}`);
   for (const url of [v.sharedOwner, v.controlOwner]) await withClient(url, (c) => c.query('DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;'));
   await migrate(v.sharedOwner);
   await migrate(v.controlOwner, { dir: CONTROL_MIGRATIONS_DIR, lockKey: 727002 });

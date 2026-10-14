@@ -22,6 +22,10 @@ export interface ProvisionDeps {
   runtimeHost?: string;
   runtimePort?: number;
   schoolMigrationsDir?: string;
+  /** HMAC key for backup manifests (PETRA_BACKUP_SIGNING_KEY). Keep it separate from the backups and from the master key. */
+  backupSigningKey?: Buffer;
+  /** Test-only hooks. */
+  testHooks?: { afterExport?: (manifestPath: string) => void | Promise<void> };
 }
 
 export class ProvisioningBusyError extends Error {}
@@ -246,13 +250,19 @@ export async function checkSchoolHealth(
     const rows = (await c.query(`SELECT id FROM schools`)).rows;
     await c.query('COMMIT');
     add('single_school_row_matches_registry', opts.requireSchoolRow === false ? true : rows.length === 1 && rows[0].id === e.id, `rows=${rows.length}`);
-    const others = (
+    // The school role may open a session on its own database and on NO other (control plane, shared legacy database,
+    // other schools, postgres, template1, backup/scratch databases).
+    const other = (
       await c.query(
-        `SELECT count(*)::int AS n FROM pg_database WHERE datname LIKE 'sk\\_%' AND datname <> $1 AND has_database_privilege(current_user, datname, 'CONNECT')`,
+        `SELECT datname FROM pg_database WHERE datallowconn AND datname <> $1 AND has_database_privilege(current_user, datname, 'CONNECT') ORDER BY 1`,
         [e.db_name],
       )
-    ).rows[0].n;
-    add('no_connect_privilege_on_other_school_databases', others === 0, `others=${others}`);
+    ).rows.map((r) => r.datname as string);
+    add(
+      'no_connect_privilege_on_other_databases',
+      other.length === 0,
+      other.length ? `connectable: ${other.slice(0, 5).join(', ')}${other.length > 5 ? ', …' : ''} (run: npm run petra -- harden-db-access)` : undefined,
+    );
   } catch (err) {
     add('connect_as_school_role', false, (err as Error).message.slice(0, 120));
   } finally {
@@ -307,19 +317,33 @@ export async function rotateSchoolSecret(d: ProvisionDeps, schoolId: string, hoo
   await platformAudit(d.control, { actorId: null, schoolId, action: 'school.db_secret_rotated', entityType: 'school', entityId: schoolId });
 }
 
-/** Re-encrypts every stored credential with the current master key (run after changing PETRA_MASTER_KEY). */
-export async function reencryptAllSecrets(control: Db, secrets: SecretBox): Promise<{ updated: number }> {
-  const { rows } = await control.query(`SELECT id, db_secret_enc, db_secret_pending_enc FROM schools WHERE db_secret_enc IS NOT NULL`);
+/**
+ * Re-encrypts stored credentials (current and pending slot) with the current master key. Safe to repeat and safe to interrupt:
+ * every row is an independent compare-and-swap (the UPDATE only applies if the row still holds the ciphertext that was read, so a
+ * concurrent credential rotation is never overwritten — such rows are counted as `skipped` and picked up by the next run), a
+ * mixed state stays decryptable as long as the previous key is configured, and a ciphertext that cannot be decrypted aborts the run
+ * before that row is touched. `schoolIds` limits the run (used by tests); the CLI processes every school.
+ */
+export async function reencryptAllSecrets(control: Db, secrets: SecretBox, opts: { schoolIds?: string[] } = {}): Promise<{ updated: number; skipped: number }> {
+  const { rows } = await control.query(
+    `SELECT id, db_secret_enc, db_secret_pending_enc FROM schools WHERE db_secret_enc IS NOT NULL AND ($1::uuid[] IS NULL OR id = ANY($1::uuid[])) ORDER BY id`,
+    [opts.schoolIds ?? null],
+  );
   let updated = 0;
+  let skipped = 0;
   for (const r of rows) {
     const cur = secrets.reencrypt(r.db_secret_enc, r.id);
     const pend = r.db_secret_pending_enc ? secrets.reencrypt(r.db_secret_pending_enc, r.id) : null;
-    if (cur !== r.db_secret_enc || pend !== r.db_secret_pending_enc) {
-      await control.query(`UPDATE schools SET db_secret_enc = $2, db_secret_pending_enc = $3 WHERE id = $1`, [r.id, cur, pend]);
-      updated++;
-    }
+    if (cur === r.db_secret_enc && pend === r.db_secret_pending_enc) continue;
+    const u = await control.query(
+      `UPDATE schools SET db_secret_enc = $2, db_secret_pending_enc = $3
+        WHERE id = $1 AND db_secret_enc = $4 AND db_secret_pending_enc IS NOT DISTINCT FROM $5`,
+      [r.id, cur, pend, r.db_secret_enc, r.db_secret_pending_enc],
+    );
+    if (u.rowCount) updated++;
+    else skipped++;
   }
-  return { updated };
+  return { updated, skipped };
 }
 
 export { APP_ROLE_PLACEHOLDER };

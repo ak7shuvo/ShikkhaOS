@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { audit } from '../audit.js';
-import { SESSION_COOKIE, authOf, authenticate, authz, makeCookieValue, parse } from '../context.js';
+import { SESSION_COOKIE, authOf, authenticate, authz, makeCookieValue, parse, splitCookie } from '../context.js';
 import { withContext } from '../db.js';
 import { AppError } from '../errors.js';
 import { PASSWORD_MIN_LENGTH, burnPasswordCheck, hashPassword, hashToken, newSessionToken, verifyPassword } from '../passwords.js';
@@ -127,11 +127,33 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     return sessionInfo(auth);
   });
 
-  app.post('/auth/logout', { preHandler: authz(app, { anySession: true }) }, async (req, reply) => {
-    const a = authOf(req);
-    await withContext(a.pool, { userId: a.userId, sessionHash: a.tokenHash }, (tx) => tx.query('DELETE FROM sessions WHERE id = $1', [a.sessionId]));
+  // Logout must work in every school/subscription state (suspended, maintenance, offboarding, read-only, blocked), otherwise users
+  // cannot end their own session. It therefore bypasses authz(): the only power it grants is deleting the session whose token the
+  // caller presents, inside the school database that issued it (the cookie's school id is a routing hint; the token hash must exist
+  // there with a matching active_school_id). The cookie is always cleared; `revoked` says whether a server-side session was removed.
+  app.post('/auth/logout', async (req, reply) => {
+    const c = splitCookie(req.cookies[SESSION_COOKIE]);
+    let revoked = false;
+    if (c) {
+      try {
+        const entry = await router.byId(c.schoolId);
+        if (entry && ['active', 'maintenance', 'suspended', 'offboarding'].includes(entry.status)) {
+          const pool = await router.poolFor(entry);
+          const hash = hashToken(c.token);
+          revoked = await router.guard(entry, () =>
+            withContext(
+              pool,
+              { sessionHash: hash },
+              async (tx) => ((await tx.query('DELETE FROM sessions WHERE token_hash = $1 AND active_school_id = $2', [hash, entry.id])).rowCount ?? 0) > 0,
+            ),
+          );
+        }
+      } catch {
+        /* school database unavailable: the cookie is still cleared; the session expires on its own */
+      }
+    }
     reply.clearCookie(SESSION_COOKIE, { path: '/' });
-    return { ok: true };
+    return { ok: true, revoked };
   });
 
   app.get('/auth/me', { preHandler: authz(app, { anySession: true }) }, async (req) => sessionInfo(authOf(req)));

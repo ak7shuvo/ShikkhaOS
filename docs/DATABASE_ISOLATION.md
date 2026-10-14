@@ -53,14 +53,32 @@ Databases are **never created per request**. They are created only by the provis
 | School database down / role revoked | `503 TENANT_UNAVAILABLE` for that school only; recovers automatically when the database is back.                                      |
 | Control plane down                  | No logins or authenticated requests for any school (the registry is needed on every request, apart from the short cache).             |
 
+## Database-level access control (`CONNECT`)
+
+PostgreSQL grants `CONNECT` to `PUBLIC` on every new database. This repository closes it, and the closure is **verified against the real ACL**, not assumed:
+
+| Database                        | `PUBLIC` | Who may `CONNECT`                                                          | Applied by                                                                                         |
+| ------------------------------- | -------- | -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| control plane (`petra_control`) | revoked  | `petra_control_app` (+ owner/superuser)                                    | control migration `002_database_acl.sql`; `petra harden-db-access`                                 |
+| legacy shared database          | revoked  | `shikkha_app` (+ owner/superuser)                                          | school migration `003_database_acl.sql` (placeholder role substituted by the runner); same command |
+| each school database `sk_<id>`  | revoked  | `sk_<id>_app` only                                                         | provisioning; migration `003`; `petra migrate`                                                     |
+| `postgres`                      | revoked  | the connecting provisioner role + `PETRA_OPERATOR_ROLES` (comma-separated) | `petra harden-db-access`; `petra provision` runs it first (`--skip-acl` to skip)                   |
+| `template1`                     | revoked  | superusers/owner only                                                      | `petra harden-db-access` (`CREATE DATABASE` copies the template without connecting to it)          |
+
+`npm run petra -- harden-db-access` is idempotent, re-reads `aclexplode(coalesce(datacl, acldefault('d', datdba)))` afterwards, and **exits non-zero with the exact SQL to run** if `PUBLIC` can still connect. That matters because a `REVOKE` by a role that does not own the database only raises a _warning_ in PostgreSQL. `petra health` prints a `cluster-acl` line (exit 2 when open), and every school health check includes `no_connect_privilege_on_other_databases` (the school role itself is asked via `has_database_privilege`), which gates the transition to `active`.
+
+**Privileges the DB operator must apply separately** (this repository cannot do it with a role that is not the database owner or a superuser): `REVOKE ALL ON DATABASE postgres, template1 FROM PUBLIC` and `GRANT CONNECT ON DATABASE postgres TO <provisioner and operator roles>`; the same for any other pre-existing database (monitoring, marker, other applications) that school roles must not reach. Run `harden-db-access` with the cluster owner's credential once per cluster, then use the lower-privileged provisioner afterwards. Databases created by other tooling later start with `PUBLIC CONNECT` again (PostgreSQL has no default-privilege setting for database-level `CONNECT`), so re-run the command or make the creation procedure revoke it.
+
+Evidence: `db-access.test.ts` (real roles: school, control and shared roles each denied everywhere except their own database; health-check detection; a non-owner `REVOKE` is reported instead of passing; a non-superuser provisioner can provision, health-check, export and restore after hardening).
+
 ## Network access (requirements — not configured or verified by this repository)
 
 The privileges above are tested. The following controls are **deployment configuration and have not been verified here**:
 
 1. PostgreSQL listens only on a private interface (`listen_addresses`), reachable only from the API hosts and the operator host (firewall / security group).
 2. `pg_hba.conf` restricts each school role to its own database and the API source network, using `scram-sha-256`, e.g. `hostssl sk_aaaaaaaaaaaa sk_aaaaaaaaaaaa_app 10.0.1.0/24 scram-sha-256` (one line per school, or a prefix pattern with a role name regex), and `hostssl petra_control petra_control_app …`. Reject everything else.
-3. TLS enabled on the server; set `SCHOOL_DB_SSL=true` and verify certificates. (Not verified in this repository.)
-4. `REVOKE CONNECT ON DATABASE postgres, template1 FROM PUBLIC;` so a school role cannot connect to maintenance databases (PostgreSQL grants `CONNECT` to `PUBLIC` there by default; the school role has no objects it can use, but close it).
+3. TLS enabled on the server with a certificate whose name matches the host the API uses; set `CONTROL_DB_SSL=true`, `SCHOOL_DB_SSL=true` and, for a private CA, `DB_SSL_CA_FILE=/path/to/ca.pem` (certificate **and** host name are always verified). Operator tools use libpq: set `PGSSLMODE=verify-full` and `PGSSLROOTCERT`. Trusted-CA success and untrusted-CA failure are tested against a disposable TLS server (`tls.test.ts`); the real production certificate chain and `pg_hba` `hostssl` rules are not.
+4. `postgres`/`template1` `CONNECT` — implemented and verified, see the section above (cluster-level ownership of the command is yours).
 5. The provisioner credential exists only on the operator host.
 
 ## Evidence (automated tests, real PostgreSQL roles and databases)
@@ -81,6 +99,27 @@ The privileges above are tested. The following controls are **deployment configu
 4. Verifies, per table, the row count and an MD5 digest of the canonical row content against the shared source, plus the user count. Any mismatch aborts, rolls back and reopens the school on the shared database.
 5. Flips the registry (`db_mode='dedicated'`, `migrated_from_shared_at`) and audits it. The shared rows are **left untouched**. Sessions do not move; users sign in again.
 
+**Concurrency.** The whole lifecycle (steps 1–5, rollback and recovery) runs under a per-school PostgreSQL advisory lock held on a dedicated control-plane connection (`migrate:<school id>`). A second migrate, rollback or recovery for the same school fails immediately with "another migration or recovery holds the lock"; `migration-inspect` reports `migration_in_progress`. The lock is session-level, so a crashed process releases it automatically.
+
+### Recovering a school left in `maintenance`
+
+If the process dies (or the control plane is unreachable) between step 2 and the end, the school stays in `maintenance`. Nothing is activated or discarded automatically. The operator inspects, then names an action:
+
+```bash
+npm run petra -- migration-inspect <slug>                  # read-only: real registry + shared source + target database, re-verifies a copied target
+npm run petra -- migration-recover <slug> <reopen-shared|complete-cutover|reopen-dedicated>
+```
+
+| Real state found                                                        | Recommendation / allowed actions                                                     |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| shared source intact, target empty or missing (crash during the copy)   | `reopen-shared` (the uncommitted copy died with its transaction)                     |
+| shared source intact, target holds the school and **all tables verify** | `complete-cutover` (recommended) or `reopen-shared`                                  |
+| shared source intact, target holds the school but **does not match**    | `reopen-shared` only; then re-run `migrate-to-dedicated --reset-target` deliberately |
+| registry already `dedicated`, target holds the school                   | `reopen-dedicated`                                                                   |
+| source missing from the shared DB, or dedicated target missing/empty    | `manual_review` — no action is accepted                                              |
+| another migration/recovery is running                                   | `migration_in_progress` — no action is accepted                                      |
+
+`migration-recover` re-runs the inspection under the same lock and refuses an action the _current_ state does not allow. `reopen-*` change only the registry status; `complete-cutover` re-verifies first; no data is deleted or overwritten and every recovery is written to the platform audit. Evidence: `migration-recovery.test.ts` (SIGKILL of a real child process mid-copy and after the commit, tampered target, concurrent attempts).
 `rollback-to-shared <slug>` flips the registry back. It is refused if the dedicated database has audited writes since cut-over (they would be lost) unless `--accept-data-loss` is given.
 
 ### Removing shared mode
@@ -96,4 +135,4 @@ Delete the shared code path (`db_mode='shared'`, `SHARED_DATABASE_URL`, shared f
 
 ## Backup, restore, export, offboarding
 
-See [SCHOOL_PROVISIONING.md](SCHOOL_PROVISIONING.md#backup-restore-and-export) and [#offboarding](SCHOOL_PROVISIONING.md#offboarding). Summary: per-school logical dumps (`pg_dump -Fc`) with a checksummed manifest, restore only into a **new** database followed by verification against the manifest, a restore drill is part of the test suite, and deletion is a separate explicit, confirmed, retention-gated operation that requires a restore-verified final export.
+See [SCHOOL_PROVISIONING.md](SCHOOL_PROVISIONING.md#backup-restore-and-export) and [#offboarding](SCHOOL_PROVISIONING.md#offboarding). Summary: per-school logical dumps (`pg_dump -Fc`) with a checksummed manifest (row counts **and** content digests, optionally HMAC-signed), restore only into a **new** database followed by verification against the manifest, a restore drill is part of the test suite, and deletion is a separate explicit, confirmed, retention-gated operation that requires a restore-verified final export.

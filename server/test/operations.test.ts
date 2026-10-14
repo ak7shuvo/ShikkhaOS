@@ -43,7 +43,7 @@ describe('backup, restore and export procedure', () => {
 
     const scratch = await scratchDbName('x');
     const r = await restoreDump(f.deps, manifestPath, scratch);
-    expect(r).toEqual({ ok: true, mismatches: [], placeholder_role_created: null });
+    expect(r).toEqual({ ok: true, mismatches: [], placeholder_role_created: null, cleaned_up: false, signature: 'unsigned' });
     const c = new pg.Client({ connectionString: urlForDb(f.deps.adminUrl, scratch) });
     await c.connect();
     expect((await c.query(`SELECT name FROM classes ORDER BY name`)).rows.map((x) => x.name)).toEqual(['Class 7', 'Class 8']);

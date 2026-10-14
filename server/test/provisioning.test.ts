@@ -46,7 +46,7 @@ describe('provisioning a dedicated school database', () => {
       db_name: dbNameFor(id),
       db_role: roleNameFor(id),
       provisioning_step: 'active',
-      schema_version: '002_session_idle.sql',
+      schema_version: '003_database_acl.sql',
     });
     expect(e.db_secret_enc).toMatch(/^v1\.k1\./);
     expect(JSON.stringify(e)).not.toContain(f.deps.secrets.decrypt(e.db_secret_enc!, id));
@@ -61,7 +61,11 @@ describe('provisioning a dedicated school database', () => {
     await sdb.connect();
     expect((await sdb.query('SELECT id, code FROM schools')).rows).toEqual([{ id, code: slug }]);
     expect((await sdb.query(`SELECT count(*)::int AS n FROM school_memberships WHERE role = 'school_admin'`)).rows[0].n).toBe(1);
-    expect((await sdb.query(`SELECT name FROM schema_migrations ORDER BY name`)).rows.map((r) => r.name)).toEqual(['001_init.sql', '002_session_idle.sql']);
+    expect((await sdb.query(`SELECT name FROM schema_migrations ORDER BY name`)).rows.map((r) => r.name)).toEqual([
+      '001_init.sql',
+      '002_session_idle.sql',
+      '003_database_acl.sql',
+    ]);
     await sdb.end();
   });
 
@@ -83,7 +87,7 @@ describe('provisioning a dedicated school database', () => {
         'connect_as_school_role',
         'role_is_restricted',
         'single_school_row_matches_registry',
-        'no_connect_privilege_on_other_school_databases',
+        'no_connect_privilege_on_other_databases',
         'migrations_current',
       ]),
     );

@@ -72,7 +72,7 @@ export function parse<S extends ZodTypeAny>(schema: S, data: unknown): z.infer<S
 
 /** Cookie value is `<school id>.<random token>`. The school id is only a routing hint: the session must exist in that school's database. */
 export const makeCookieValue = (schoolId: string, token: string) => `${schoolId}.${token}`;
-function splitCookie(v: string | undefined): { schoolId: string; token: string } | null {
+export function splitCookie(v: string | undefined): { schoolId: string; token: string } | null {
   if (!v) return null;
   const i = v.indexOf('.');
   if (i !== 36) return null;

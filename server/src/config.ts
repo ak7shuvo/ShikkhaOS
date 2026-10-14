@@ -34,7 +34,14 @@ const schema = z.object({
   MAX_SCHOOL_POOLS: z.coerce.number().int().min(1).max(200).default(25),
   SCHOOL_POOL_MAX: z.coerce.number().int().min(1).max(50).default(5),
   BILLING_TIMEZONE: z.string().default('Asia/Dhaka'),
-  // true = TLS to school databases (certificate verification follows Node defaults). Off by default for local development only.
+  // true = TLS to the control-plane and shared databases (certificate + host name verified). Off by default for local development only.
+  CONTROL_DB_SSL: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+  // Optional PEM file with a private CA that signed the database server certificates (all TLS-enabled runtime pools).
+  DB_SSL_CA_FILE: z.string().optional(),
+  // true = TLS to school databases (certificate + host name verified).
   SCHOOL_DB_SSL: z
     .enum(['true', 'false'])
     .default('false')

@@ -18,6 +18,7 @@ import { resultRoutes } from './routes/results.js';
 import { schoolRoutes } from './routes/school.js';
 import { TenantRouter, TenantUnavailableError } from './tenancy.js';
 import { SecretBox, loadMasterKeys } from './secrets.js';
+import { tlsOptions } from './tls.js';
 
 /** Trust exactly `n` proxies counted from the TCP peer: the first address beyond them is the client. */
 const hops = (n: number) => (_addr: string, i: number) => i < n;
@@ -44,7 +45,7 @@ export async function buildApp(config: Config, control: Db, opts: AppOptions = {
     maxPools: config.MAX_SCHOOL_POOLS,
     poolMax: config.SCHOOL_POOL_MAX,
     cacheMs: config.ENTITLEMENT_CACHE_SECONDS * 1000,
-    ssl: config.SCHOOL_DB_SSL,
+    ssl: tlsOptions(config.SCHOOL_DB_SSL, config.DB_SSL_CA_FILE),
   });
   const entitlements = new EntitlementService(control, { cacheMs: config.ENTITLEMENT_CACHE_SECONDS * 1000, timezone: config.BILLING_TIMEZONE, now });
   const rpCache = new Map<string, RolePermissionMap>();
