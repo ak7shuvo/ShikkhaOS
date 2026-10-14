@@ -12,7 +12,8 @@ export function masterKeyEnv() {
 }
 export const testSecretBox = () => new SecretBox(loadMasterKeys(masterKeyEnv()));
 export const adminUrl = () => process.env.TEST_PROVISIONER_DATABASE_URL!;
-export const today = () => todayIn(loadConfig({ NODE_ENV: 'test', CONTROL_DATABASE_URL: 'postgres://x:y@h/d', ...masterKeyEnv() } as NodeJS.ProcessEnv).BILLING_TIMEZONE);
+export const today = () =>
+  todayIn(loadConfig({ NODE_ENV: 'test', CONTROL_DATABASE_URL: 'postgres://x:y@h/d', ...masterKeyEnv() } as NodeJS.ProcessEnv).BILLING_TIMEZONE);
 
 export interface ControlFixture {
   control: Db;

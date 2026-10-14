@@ -94,8 +94,13 @@ describe('backup, restore and export procedure', () => {
 
 describe('offboarding and deletion safeguards', () => {
   const lapse = (id: string, daysAgo: number) =>
-    f.control.query(`UPDATE subscriptions SET period_start = $2, period_end = $3 WHERE school_id = $1`, [id, addDays(today(), -daysAgo - 30), addDays(today(), -daysAgo)]);
-  const fin = (id: string, slug: string, over: Record<string, unknown> = {}) => finalizeOffboarding(f.deps, id, { confirmSlug: slug, exportDir: tmp(), today: today(), actorId: null, ...over });
+    f.control.query(`UPDATE subscriptions SET period_start = $2, period_end = $3 WHERE school_id = $1`, [
+      id,
+      addDays(today(), -daysAgo - 30),
+      addDays(today(), -daysAgo),
+    ]);
+  const fin = (id: string, slug: string, over: Record<string, unknown> = {}) =>
+    finalizeOffboarding(f.deps, id, { confirmSlug: slug, exportDir: tmp(), today: today(), actorId: null, ...over });
 
   it('a failed payment or lapse never deletes anything; deletion needs an explicit, later, confirmed step', async () => {
     const A = await school('off-lapse');
@@ -172,13 +177,19 @@ describe('support and build configuration', () => {
   it('writes non-secret build profiles for branded clients and nothing else', async () => {
     const A = await school('sup-build');
     await f.control.query(`UPDATE school_branding SET display_name = 'Green Valley School', primary_color = '#0b6b4f' WHERE school_id = $1`, [A.id]);
-    await f.control.query(`INSERT INTO school_build_profiles (school_id, platform, app_id, app_name) VALUES ($1,'android','com.petra.shikkhaos.gv','Green Valley'), ($1,'windows','com.petra.shikkhaos.gv','Green Valley')`, [A.id]);
+    await f.control.query(
+      `INSERT INTO school_build_profiles (school_id, platform, app_id, app_name) VALUES ($1,'android','com.petra.shikkhaos.gv','Green Valley'), ($1,'windows','com.petra.shikkhaos.gv','Green Valley')`,
+      [A.id],
+    );
     const out = tmp();
     const r = await writeBuildProfile(f.control, A.slug, out, 'https://api.example.test');
     expect(r.files.sort()).toEqual(['capacitor.config.json', 'profile.json', 'tauri.windows.conf.json', 'web.env']);
     const all = r.files.map((n) => fs.readFileSync(path.join(r.dir, n), 'utf8')).join('\n');
     expect(all).toContain(`VITE_SCHOOL_SLUG=${A.slug}`);
-    expect(JSON.parse(fs.readFileSync(path.join(r.dir, 'capacitor.config.json'), 'utf8'))).toMatchObject({ appId: 'com.petra.shikkhaos.gv', appName: 'Green Valley' });
+    expect(JSON.parse(fs.readFileSync(path.join(r.dir, 'capacitor.config.json'), 'utf8'))).toMatchObject({
+      appId: 'com.petra.shikkhaos.gv',
+      appName: 'Green Valley',
+    });
     expect(all).not.toMatch(/secret|password|v1\.k1|postgres:\/\/|db_name|sk_[a-f0-9]{12}/);
     await expect(writeBuildProfile(f.control, A.slug, out, 'http://insecure.example.test')).rejects.toThrow(/https/);
     await expect(writeBuildProfile(f.control, uniqueCode('zz'), out, 'https://api.example.test')).rejects.toThrow(/unknown school/);

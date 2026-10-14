@@ -44,4 +44,3 @@ describe('workflow table', () => {
     expect(TRANSITIONS.open_correction.from).toEqual(['published']);
   });
 });
-

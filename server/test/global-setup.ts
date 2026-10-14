@@ -39,7 +39,8 @@ export default async function setup(): Promise<void> {
   // Orphaned dedicated school databases/roles from previous runs.
   const a = new pg.Client({ connectionString: admin });
   await a.connect();
-  for (const r of (await a.query(`SELECT datname FROM pg_database WHERE datname ~ '^sk_[a-f0-9]{12}$'`)).rows) await a.query(`DROP DATABASE "${r.datname}" WITH (FORCE)`);
+  for (const r of (await a.query(`SELECT datname FROM pg_database WHERE datname ~ '^(sk_[a-f0-9]{12}|restore_.*|verify_sk_.*)$'`)).rows)
+    await a.query(`DROP DATABASE "${r.datname}" WITH (FORCE)`);
   for (const r of (await a.query(`SELECT rolname FROM pg_roles WHERE rolname ~ '^sk_[a-f0-9]{12}_app$'`)).rows) await a.query(`DROP ROLE "${r.rolname}"`);
   await a.end();
 

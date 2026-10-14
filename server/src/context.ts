@@ -61,7 +61,11 @@ declare module 'fastify' {
 export function parse<S extends ZodTypeAny>(schema: S, data: unknown): z.infer<S> {
   const r = schema.safeParse(data);
   if (!r.success) {
-    throw badRequest('VALIDATION_ERROR', 'Invalid request', r.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })));
+    throw badRequest(
+      'VALIDATION_ERROR',
+      'Invalid request',
+      r.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
+    );
   }
   return r.data;
 }
@@ -140,7 +144,8 @@ export function authz(app: FastifyInstance, opts: GuardOpts = {}) {
     if (opts.anySession) return;
     if (!auth.schoolId) throw new AppError(409, 'SCHOOL_CONTEXT_REQUIRED', 'No active membership in this school');
     const e = auth.entitlement;
-    if (e.level === 'blocked') throw new AppError(403, 'SUBSCRIPTION_BLOCKED', e.warning?.message ?? 'Subscription inactive', { retention_until: e.retention_until });
+    if (e.level === 'blocked')
+      throw new AppError(403, 'SUBSCRIPTION_BLOCKED', e.warning?.message ?? 'Subscription inactive', { retention_until: e.retention_until });
     if (e.level === 'read_only' && !READ_ONLY_SAFE_METHODS.has(req.method)) {
       throw new AppError(403, 'SUBSCRIPTION_READ_ONLY', e.warning?.message ?? 'Subscription expired: read-only', { read_only_until: e.read_only_until });
     }

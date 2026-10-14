@@ -19,7 +19,10 @@ export interface MigrateOptions {
 }
 
 export function migrationFiles(dir: string): string[] {
-  return fs.readdirSync(dir).filter((f) => f.endsWith('.sql')).sort();
+  return fs
+    .readdirSync(dir)
+    .filter((f) => f.endsWith('.sql'))
+    .sort();
 }
 
 export async function appliedMigrations(url: string): Promise<string[]> {

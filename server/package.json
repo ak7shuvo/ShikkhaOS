@@ -11,8 +11,9 @@
     "test": "vitest run",
     "db:setup": "tsx --env-file-if-exists=../.env src/scripts/db-setup.ts",
     "db:migrate": "tsx --env-file-if-exists=../.env src/scripts/migrate.ts",
-    "db:seed": "tsx --env-file-if-exists=../.env src/scripts/seed.ts",
-    "admin:create": "tsx --env-file-if-exists=../.env src/scripts/create-platform-admin.ts"
+    "control:setup": "tsx --env-file-if-exists=../.env src/scripts/control-setup.ts",
+    "control:migrate": "tsx --env-file-if-exists=../.env src/scripts/control-migrate.ts",
+    "petra": "tsx --env-file-if-exists=../.env src/scripts/petra.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.0",

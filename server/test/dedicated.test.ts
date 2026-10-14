@@ -64,8 +64,12 @@ describe('login and routing', () => {
     const A = await newSchool('dd-pa');
     const B = await newSchool('dd-pb');
     const email = 'shared.person@example.test';
-    expect((await A.admin.post('/school/members', { email, full_name: 'Person', initial_password: 'password-for-school-a', role: 'principal' })).status).toBe(201);
-    expect((await B.admin.post('/school/members', { email, full_name: 'Person', initial_password: 'password-for-school-b', role: 'teacher' })).status).toBe(201);
+    expect((await A.admin.post('/school/members', { email, full_name: 'Person', initial_password: 'password-for-school-a', role: 'principal' })).status).toBe(
+      201,
+    );
+    expect((await B.admin.post('/school/members', { email, full_name: 'Person', initial_password: 'password-for-school-b', role: 'teacher' })).status).toBe(
+      201,
+    );
 
     const inA = new Client(h.app);
     const rA = await inA.login(email, 'password-for-school-a', A.slug);
@@ -131,18 +135,29 @@ describe('login and routing', () => {
 describe('full result workflow on dedicated databases', () => {
   it('admin builds the school, teacher enters marks, controller publishes, guardian sees only published results', async () => {
     const A = await newSchool('dd-flow');
-    const mk = (email: string, role: string, name: string) => A.admin.post('/school/members', { email, full_name: name, initial_password: 'long-enough-password', role });
+    const mk = (email: string, role: string, name: string) =>
+      A.admin.post('/school/members', { email, full_name: name, initial_password: 'long-enough-password', role });
     const teacherId = (await mk(`t@${A.slug}.example.test`, 'teacher', 'Teacher')).body.user_id;
     await mk(`c@${A.slug}.example.test`, 'exam_controller', 'Controller');
     const year = (await A.admin.post('/academic-years', { name: '2026', starts_on: '2026-01-01', ends_on: '2026-12-31', is_current: true })).body.id;
     const cls = (await A.admin.post('/classes', { name: 'Class 6' })).body.id;
     const sec = (await A.admin.post(`/classes/${cls}/sections`, { name: 'A' })).body.id;
     const sub = (await A.admin.post('/subjects', { code: 'MAT', name: 'Maths' })).body.id;
-    const policy = (await A.admin.post('/school/grading-policies', { name: 'School scale', bands: [{ min_percent: 0, grade: 'P' }, { min_percent: 50, grade: 'Q' }] })).body.id;
+    const policy = (
+      await A.admin.post('/school/grading-policies', {
+        name: 'School scale',
+        bands: [
+          { min_percent: 0, grade: 'P' },
+          { min_percent: 50, grade: 'Q' },
+        ],
+      })
+    ).body.id;
     const st = (await A.admin.post('/students', { student_code: 'S1', full_name: 'Demo Student' })).body.id;
     await A.admin.post(`/students/${st}/enrollments`, { academic_year_id: year, class_id: cls, section_id: sec, roll_no: 1 });
     expect((await A.admin.post('/teacher-assignments', { user_id: teacherId, academic_year_id: year, class_id: cls, subject_id: sub })).status).toBe(201);
-    const g = (await A.admin.post('/guardians', { full_name: 'Guardian', account: { email: `g@${A.slug}.example.test`, initial_password: 'long-enough-password' } })).body.id;
+    const g = (
+      await A.admin.post('/guardians', { full_name: 'Guardian', account: { email: `g@${A.slug}.example.test`, initial_password: 'long-enough-password' } })
+    ).body.id;
     const link = (await A.admin.post(`/students/${st}/guardians`, { guardian_id: g, relationship: 'parent' })).body.id;
     await A.admin.post(`/student-guardians/${link}/verify`);
 
@@ -153,7 +168,15 @@ describe('full result workflow on dedicated databases', () => {
     const guardian = new Client(h.app);
     await guardian.login(`g@${A.slug}.example.test`, 'long-enough-password', A.slug);
 
-    const exam = (await ctrl.post('/exams', { name: 'Final', academic_year_id: year, class_id: cls, grading_policy_id: policy, subjects: [{ subject_id: sub, max_marks: 100 }] })).body.id;
+    const exam = (
+      await ctrl.post('/exams', {
+        name: 'Final',
+        academic_year_id: year,
+        class_id: cls,
+        grading_policy_id: policy,
+        subjects: [{ subject_id: sub, max_marks: 100 }],
+      })
+    ).body.id;
     const sheet = (await teacher.post('/result-sheets', { exam_id: exam, subject_id: sub, section_id: sec })).body.id;
     const enr = (await teacher.get(`/result-sheets/${sheet}`)).body.marks[0].enrollment_id;
     expect((await teacher.put(`/result-sheets/${sheet}/marks`, { entries: [{ enrollment_id: enr, obtained: 101, is_absent: false }] })).status).toBe(400);
@@ -168,7 +191,13 @@ describe('full result workflow on dedicated databases', () => {
     expect(res.body.items).toMatchObject([{ subject_name: 'Maths', obtained: 64, grade: 'Q' }]);
 
     // Immutable history lives in the school's own database.
-    expect((await inDb<{ action: string }>(A.id, `SELECT action FROM result_events ORDER BY created_at, id`)).map((e) => e.action)).toEqual(['create', 'submit', 'start_review', 'approve', 'publish']);
+    expect((await inDb<{ action: string }>(A.id, `SELECT action FROM result_events ORDER BY created_at, id`)).map((e) => e.action)).toEqual([
+      'create',
+      'submit',
+      'start_review',
+      'approve',
+      'publish',
+    ]);
     await expect(inDb(A.id, `DELETE FROM result_events`)).rejects.toThrow(/append-only/);
   });
 });
@@ -208,7 +237,11 @@ describe('failure isolation between schools', () => {
     const A = await newSchool('dd-suba');
     const B = await newSchool('dd-subb');
     const today = h.clock.now.toISOString().slice(0, 10);
-    await f.control.query(`UPDATE subscriptions SET period_start = $2, period_end = $3 WHERE school_id = $1`, [A.id, addDays(today, -200), addDays(today, -100)]);
+    await f.control.query(`UPDATE subscriptions SET period_start = $2, period_end = $3 WHERE school_id = $1`, [
+      A.id,
+      addDays(today, -200),
+      addDays(today, -100),
+    ]);
     expect((await A.admin.get('/classes')).body.error.code).toBe('SUBSCRIPTION_BLOCKED');
     expect((await B.admin.get('/classes')).status).toBe(200);
   });
@@ -218,11 +251,13 @@ describe('role and credential boundaries observed from the database side', () =>
   it('each school role is confined to its own database and holds no cross-database privileges', async () => {
     const A = await newSchool('dd-bnd-a');
     const B = await newSchool('dd-bnd-b');
-    const rows = (await f.admin.query(
-      `SELECT d.datname, has_database_privilege($1, d.datname, 'CONNECT') AS connect, has_database_privilege($1, d.datname, 'CREATE') AS can_create
+    const rows = (
+      await f.admin.query(
+        `SELECT d.datname, has_database_privilege($1, d.datname, 'CONNECT') AS connect, has_database_privilege($1, d.datname, 'CREATE') AS can_create
          FROM pg_database d WHERE d.datname ~ '^sk_[a-f0-9]{12}$' ORDER BY 1`,
-      [roleNameFor(A.id)],
-    )).rows;
+        [roleNameFor(A.id)],
+      )
+    ).rows;
     expect(rows.filter((r) => r.connect).map((r) => r.datname)).toEqual([dbNameFor(A.id)]);
     expect(rows.every((r) => !r.can_create)).toBe(true);
     void B;

@@ -63,36 +63,77 @@ export function todayIn(tz: string, now: Date = new Date()): string {
 
 export function entitlementOf(sub: SubscriptionRow | null, today: string): Entitlement {
   if (!sub) {
-    return { level: 'blocked', status: 'suspended', reason: 'no_subscription', days_past_end: 0, full_access_until: today, read_only_until: today, retention_until: today, deletion_allowed_from: null, warning: { code: 'BLOCKED', message: 'No subscription on record' } };
+    return {
+      level: 'blocked',
+      status: 'suspended',
+      reason: 'no_subscription',
+      days_past_end: 0,
+      full_access_until: today,
+      read_only_until: today,
+      retention_until: today,
+      deletion_allowed_from: null,
+      warning: { code: 'BLOCKED', message: 'No subscription on record' },
+    };
   }
   const d = daysBetween(sub.period_end, today);
   const fullUntil = addDays(sub.period_end, sub.grace_days);
   const roUntil = addDays(fullUntil, sub.readonly_days);
   const retention = addDays(sub.period_end, sub.retention_days);
   // Deletion is only ever eligible after retention AND with no legal hold; it still needs an explicit offboarding.
-  const base = { days_past_end: d, full_access_until: fullUntil, read_only_until: roUntil, retention_until: retention, deletion_allowed_from: sub.legal_hold ? null : addDays(retention, 1) };
+  const base = {
+    days_past_end: d,
+    full_access_until: fullUntil,
+    read_only_until: roUntil,
+    retention_until: retention,
+    deletion_allowed_from: sub.legal_hold ? null : addDays(retention, 1),
+  };
 
   if (sub.status === 'suspended') {
-    return { ...base, level: 'blocked', status: 'suspended', reason: 'manual_suspension', warning: { code: 'BLOCKED', message: 'Account suspended by Petra Software Solution' } };
+    return {
+      ...base,
+      level: 'blocked',
+      status: 'suspended',
+      reason: 'manual_suspension',
+      warning: { code: 'BLOCKED', message: 'Account suspended by Petra Software Solution' },
+    };
   }
   if (d <= 0) {
     const status: EffectiveStatus = sub.status === 'trial' ? 'trial' : sub.status === 'cancelled' ? 'cancelled' : 'active';
     return { ...base, level: 'full', status, reason: 'in_period', warning: null };
   }
   if (d <= sub.grace_days) {
-    return { ...base, level: 'grace', status: 'past_due', reason: 'grace_period', warning: { code: 'RENEWAL_OVERDUE', message: `Subscription ended ${d} day(s) ago. Full access continues until ${fullUntil}.` } };
+    return {
+      ...base,
+      level: 'grace',
+      status: 'past_due',
+      reason: 'grace_period',
+      warning: { code: 'RENEWAL_OVERDUE', message: `Subscription ended ${d} day(s) ago. Full access continues until ${fullUntil}.` },
+    };
   }
   if (d <= sub.grace_days + sub.readonly_days) {
-    return { ...base, level: 'read_only', status: 'expired', reason: 'read_only_period', warning: { code: 'READ_ONLY', message: `Subscription expired. Read-only access and data export until ${roUntil}.` } };
+    return {
+      ...base,
+      level: 'read_only',
+      status: 'expired',
+      reason: 'read_only_period',
+      warning: { code: 'READ_ONLY', message: `Subscription expired. Read-only access and data export until ${roUntil}.` },
+    };
   }
-  return { ...base, level: 'blocked', status: 'suspended', reason: 'lapsed', warning: { code: 'BLOCKED', message: `Access suspended. Your data is preserved until at least ${retention}; contact Petra Software Solution.` } };
+  return {
+    ...base,
+    level: 'blocked',
+    status: 'suspended',
+    reason: 'lapsed',
+    warning: { code: 'BLOCKED', message: `Access suspended. Your data is preserved until at least ${retention}; contact Petra Software Solution.` },
+  };
 }
 
 /**
  * Stored status best reflecting an effective one (sweeper reporting only). 'suspended' is reserved for MANUAL suspension,
  * so a lapsed account is stored as 'expired' and a later payment can restore it without lifting a real suspension.
  */
-export const storedStatusFor = (e: Entitlement, current: StoredStatus): StoredStatus => (current === 'suspended' || e.reason === 'manual_suspension' ? 'suspended' : e.status === 'suspended' ? 'expired' : e.status);
+export const storedStatusFor = (e: Entitlement, current: StoredStatus): StoredStatus =>
+  current === 'suspended' || e.reason === 'manual_suspension' ? 'suspended' : e.status === 'suspended' ? 'expired' : e.status;
 
 /** New period when a payment is recorded. Renewal before the end extends seamlessly; after lapse it starts today. */
 export function renewalPeriod(currentEnd: string | null, today: string, months: number): { start: string; end: string } {

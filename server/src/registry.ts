@@ -9,8 +9,8 @@ export const RESERVED_SLUGS = new Set(['admin', 'api', 'platform', 'www', 'petra
 export interface RegisterInput {
   slug: string;
   name: string;
-  adminEmail: string;
-  adminName: string;
+  adminEmail: string | null;
+  adminName: string | null;
   createdBy: string | null;
   today: string;
   trialDays: number;
@@ -19,7 +19,10 @@ export interface RegisterInput {
   shared?: { schoolId: string };
 }
 
-export async function platformAudit(db: Db | Tx, e: { actorId: string | null; schoolId?: string | null; action: string; entityType: string; entityId?: string | null; metadata?: Record<string, unknown> }) {
+export async function platformAudit(
+  db: Db | Tx,
+  e: { actorId: string | null; schoolId?: string | null; action: string; entityType: string; entityId?: string | null; metadata?: Record<string, unknown> },
+) {
   await db.query(`INSERT INTO platform_audit_events (actor_id, school_id, action, entity_type, entity_id, metadata) VALUES ($1,$2,$3,$4,$5,$6)`, [
     e.actorId,
     e.schoolId ?? null,
@@ -40,13 +43,39 @@ export async function registerSchool(control: Db, i: RegisterInput): Promise<{ i
     await c.query(
       `INSERT INTO schools (id, slug, name, status, db_mode, provisioning_step, admin_email, admin_name, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-      [id, i.slug, i.name, i.shared ? 'active' : 'requested', i.shared ? 'shared' : 'dedicated', i.shared ? 'active' : 'requested', i.adminEmail, i.adminName, i.createdBy],
+      [
+        id,
+        i.slug,
+        i.name,
+        i.shared ? 'active' : 'requested',
+        i.shared ? 'shared' : 'dedicated',
+        i.shared ? 'active' : 'requested',
+        i.adminEmail,
+        i.adminName,
+        i.createdBy,
+      ],
     );
     await c.query(`INSERT INTO school_branding (school_id, display_name) VALUES ($1,$2)`, [id, i.name]);
     const trialEnd = addDays(i.today, Math.max(i.trialDays, 1) - 1);
-    await c.query(`INSERT INTO subscriptions (school_id, plan_code, status, period_start, period_end) VALUES ($1,$2,'trial',$3,$4)`, [id, i.plan ?? 'monthly', i.today, trialEnd]);
-    await c.query(`INSERT INTO subscription_events (school_id, event, to_status, actor_id, note) VALUES ($1,'trial_started','trial',$2,$3)`, [id, i.createdBy, `trial until ${trialEnd}`]);
-    await platformAudit(c, { actorId: i.createdBy, schoolId: id, action: 'school.register', entityType: 'school', entityId: id, metadata: { slug: i.slug, mode: i.shared ? 'shared' : 'dedicated' } });
+    await c.query(`INSERT INTO subscriptions (school_id, plan_code, status, period_start, period_end) VALUES ($1,$2,'trial',$3,$4)`, [
+      id,
+      i.plan ?? 'monthly',
+      i.today,
+      trialEnd,
+    ]);
+    await c.query(`INSERT INTO subscription_events (school_id, event, to_status, actor_id, note) VALUES ($1,'trial_started','trial',$2,$3)`, [
+      id,
+      i.createdBy,
+      `trial until ${trialEnd}`,
+    ]);
+    await platformAudit(c, {
+      actorId: i.createdBy,
+      schoolId: id,
+      action: 'school.register',
+      entityType: 'school',
+      entityId: id,
+      metadata: { slug: i.slug, mode: i.shared ? 'shared' : 'dedicated' },
+    });
     await c.query('COMMIT');
   } catch (e) {
     await c.query('ROLLBACK');
@@ -79,7 +108,8 @@ export async function recordPayment(control: Db, p: PaymentInput): Promise<{ rep
     await c.query('BEGIN');
     const sub = (await c.query(`SELECT id, status, period_end FROM subscriptions WHERE school_id = $1 FOR UPDATE`, [p.schoolId])).rows[0];
     if (!sub) throw new Error('subscription not found');
-    const dup = (await c.query(`SELECT period_start, period_end FROM subscription_payments WHERE school_id = $1 AND reference = $2`, [p.schoolId, p.reference])).rows[0];
+    const dup = (await c.query(`SELECT period_start, period_end FROM subscription_payments WHERE school_id = $1 AND reference = $2`, [p.schoolId, p.reference]))
+      .rows[0];
     if (dup) {
       await c.query('ROLLBACK');
       return { replayed: true, period_start: dup.period_start, period_end: dup.period_end };
@@ -95,9 +125,25 @@ export async function recordPayment(control: Db, p: PaymentInput): Promise<{ rep
     );
     // A manual suspension is an explicit decision: payment never silently lifts it.
     const newStatus: StoredStatus = sub.status === 'suspended' ? 'suspended' : 'active';
-    await c.query(`UPDATE subscriptions SET plan_code = $2, status = $3, period_end = $4, period_start = CASE WHEN $5::date > period_end THEN $5::date ELSE period_start END, cancelled_at = NULL WHERE school_id = $1`, [p.schoolId, p.plan, newStatus, per.end, per.start]);
-    await c.query(`INSERT INTO subscription_events (school_id, event, from_status, to_status, actor_id, note) VALUES ($1,'payment_recorded',$2,$3,$4,$5)`, [p.schoolId, sub.status, newStatus, p.actorId, `${p.plan} ${per.start}..${per.end} ref ${p.reference}`]);
-    await platformAudit(c, { actorId: p.actorId, schoolId: p.schoolId, action: 'subscription.payment', entityType: 'subscription', entityId: sub.id, metadata: { plan: p.plan, reference: p.reference, period: [per.start, per.end] } });
+    await c.query(
+      `UPDATE subscriptions SET plan_code = $2, status = $3, period_end = $4, period_start = CASE WHEN $5::date > period_end THEN $5::date ELSE period_start END, cancelled_at = NULL WHERE school_id = $1`,
+      [p.schoolId, p.plan, newStatus, per.end, per.start],
+    );
+    await c.query(`INSERT INTO subscription_events (school_id, event, from_status, to_status, actor_id, note) VALUES ($1,'payment_recorded',$2,$3,$4,$5)`, [
+      p.schoolId,
+      sub.status,
+      newStatus,
+      p.actorId,
+      `${p.plan} ${per.start}..${per.end} ref ${p.reference}`,
+    ]);
+    await platformAudit(c, {
+      actorId: p.actorId,
+      schoolId: p.schoolId,
+      action: 'subscription.payment',
+      entityType: 'subscription',
+      entityId: sub.id,
+      metadata: { plan: p.plan, reference: p.reference, period: [per.start, per.end] },
+    });
     await c.query('COMMIT');
     return { replayed: false, period_start: per.start, period_end: per.end };
   } catch (e) {

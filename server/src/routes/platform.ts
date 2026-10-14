@@ -41,9 +41,22 @@ export async function platformRoutes(app: FastifyInstance): Promise<void> {
     }
     const token = newSessionToken();
     await control.query(`UPDATE platform_admins SET failed_login_count = 0, locked_until = NULL WHERE id = $1`, [a.id]);
-    await control.query(`INSERT INTO platform_sessions (token_hash, admin_id, expires_at) VALUES ($1,$2, now() + make_interval(hours => $3))`, [hashToken(token), a.id, config.SESSION_TTL_HOURS]);
-    await control.query(`DELETE FROM platform_sessions WHERE id IN (SELECT id FROM platform_sessions WHERE admin_id = $1 ORDER BY created_at DESC OFFSET $2)`, [a.id, config.MAX_SESSIONS_PER_USER]);
-    reply.setCookie(PLATFORM_COOKIE, token, { httpOnly: true, sameSite: 'strict', secure: config.COOKIE_SECURE, path: '/api/platform', maxAge: config.SESSION_TTL_HOURS * 3600 });
+    await control.query(`INSERT INTO platform_sessions (token_hash, admin_id, expires_at) VALUES ($1,$2, now() + make_interval(hours => $3))`, [
+      hashToken(token),
+      a.id,
+      config.SESSION_TTL_HOURS,
+    ]);
+    await control.query(`DELETE FROM platform_sessions WHERE id IN (SELECT id FROM platform_sessions WHERE admin_id = $1 ORDER BY created_at DESC OFFSET $2)`, [
+      a.id,
+      config.MAX_SESSIONS_PER_USER,
+    ]);
+    reply.setCookie(PLATFORM_COOKIE, token, {
+      httpOnly: true,
+      sameSite: 'strict',
+      secure: config.COOKIE_SECURE,
+      path: '/api/platform',
+      maxAge: config.SESSION_TTL_HOURS * 3600,
+    });
     await platformAudit(control, { actorId: a.id, action: 'platform.login', entityType: 'session' });
     return { admin: { id: a.id, email: b.email } };
   });
@@ -69,8 +82,33 @@ export async function platformRoutes(app: FastifyInstance): Promise<void> {
     const today = entitlements.today();
     return {
       items: rows.map((r) => {
-        const e = entitlementOf(r.plan_code ? ({ status: r.sub_status, period_end: r.period_end, grace_days: r.grace_days, readonly_days: r.readonly_days, retention_days: r.retention_days, legal_hold: r.legal_hold } as SubscriptionRow) : null, today);
-        return { id: r.id, slug: r.slug, name: r.name, status: r.status, db_mode: r.db_mode, provisioning_step: r.provisioning_step, provisioning_error: r.provisioning_error, schema_version: r.schema_version, plan: r.plan_code, period_end: r.period_end, access_level: e.level, subscription_status: e.status };
+        const e = entitlementOf(
+          r.plan_code
+            ? ({
+                status: r.sub_status,
+                period_end: r.period_end,
+                grace_days: r.grace_days,
+                readonly_days: r.readonly_days,
+                retention_days: r.retention_days,
+                legal_hold: r.legal_hold,
+              } as SubscriptionRow)
+            : null,
+          today,
+        );
+        return {
+          id: r.id,
+          slug: r.slug,
+          name: r.name,
+          status: r.status,
+          db_mode: r.db_mode,
+          provisioning_step: r.provisioning_step,
+          provisioning_error: r.provisioning_error,
+          schema_version: r.schema_version,
+          plan: r.plan_code,
+          period_end: r.period_end,
+          access_level: e.level,
+          subscription_status: e.status,
+        };
       }),
     };
   });
@@ -78,12 +116,31 @@ export async function platformRoutes(app: FastifyInstance): Promise<void> {
   // Registration only records the school. The database is created by the operator-run provisioning workflow
   // (`npm run school:provision`), which holds the privileged credential — the API process never does.
   app.post('/platform/schools', guard, async (req, reply) => {
-    const b = parse(z.object({ slug: z.string().regex(SLUG_RE), name: z.string().min(2).max(200), admin_email: z.string().email().max(254), admin_name: z.string().min(1).max(200), plan: z.enum(['monthly', 'annual']).default('monthly') }), req.body);
+    const b = parse(
+      z.object({
+        slug: z.string().regex(SLUG_RE),
+        name: z.string().min(2).max(200),
+        admin_email: z.string().email().max(254),
+        admin_name: z.string().min(1).max(200),
+        plan: z.enum(['monthly', 'annual']).default('monthly'),
+      }),
+      req.body,
+    );
     let r;
     try {
-      r = await registerSchool(control, { slug: b.slug, name: b.name, adminEmail: b.admin_email, adminName: b.admin_name, createdBy: platformOf(req).adminId, today: entitlements.today(), trialDays: config.TRIAL_DAYS, plan: b.plan });
+      r = await registerSchool(control, {
+        slug: b.slug,
+        name: b.name,
+        adminEmail: b.admin_email,
+        adminName: b.admin_name,
+        createdBy: platformOf(req).adminId,
+        today: entitlements.today(),
+        trialDays: config.TRIAL_DAYS,
+        plan: b.plan,
+      });
     } catch (e) {
-      if ((e as Error).message.includes('reserved') || (e as Error).message.includes('invalid')) throw new AppError(400, 'INVALID_SLUG', 'Slug is invalid or reserved');
+      if ((e as Error).message.includes('reserved') || (e as Error).message.includes('invalid'))
+        throw new AppError(400, 'INVALID_SLUG', 'Slug is invalid or reserved');
       throw e;
     }
     return reply.status(201).send({ id: r.id, slug: b.slug, status: 'requested', next_step: 'An operator must run: npm run school:provision -- ' + b.slug });
@@ -102,9 +159,17 @@ export async function platformRoutes(app: FastifyInstance): Promise<void> {
     const { status } = parse(z.object({ status: z.enum(['active', 'suspended']) }), req.body);
     const cur = (await control.query(`SELECT ${REGISTRY_COLUMNS} FROM schools WHERE id = $1`, [sid])).rows[0];
     if (!cur) throw notFound('School');
-    if (!['active', 'suspended'].includes(cur.status)) throw new AppError(409, 'INVALID_STATE', `School is "${cur.status}"; only active/suspended schools can be toggled`);
+    if (!['active', 'suspended'].includes(cur.status))
+      throw new AppError(409, 'INVALID_STATE', `School is "${cur.status}"; only active/suspended schools can be toggled`);
     await control.query(`UPDATE schools SET status = $2 WHERE id = $1`, [sid, status]);
-    await platformAudit(control, { actorId: platformOf(req).adminId, schoolId: sid, action: 'school.status', entityType: 'school', entityId: sid, metadata: { from: cur.status, to: status } });
+    await platformAudit(control, {
+      actorId: platformOf(req).adminId,
+      schoolId: sid,
+      action: 'school.status',
+      entityType: 'school',
+      entityId: sid,
+      metadata: { from: cur.status, to: status },
+    });
     await router.invalidate(sid);
     return { id: sid, status };
   });
@@ -113,7 +178,10 @@ export async function platformRoutes(app: FastifyInstance): Promise<void> {
   app.put('/platform/schools/:id/branding', guard, async (req) => {
     const { id: sid } = parse(z.object({ id }), req.params);
     const b = validateBranding(req.body);
-    const r = await control.query(`UPDATE school_branding SET display_name = $2, logo_url = $3, primary_color = $4, accent_color = $5 WHERE school_id = $1 RETURNING display_name, logo_url, primary_color, accent_color`, [sid, b.display_name, b.logo_url, b.primary_color, b.accent_color]);
+    const r = await control.query(
+      `UPDATE school_branding SET display_name = $2, logo_url = $3, primary_color = $4, accent_color = $5 WHERE school_id = $1 RETURNING display_name, logo_url, primary_color, accent_color`,
+      [sid, b.display_name, b.logo_url, b.primary_color, b.accent_color],
+    );
     if (!r.rows[0]) throw notFound('School');
     await platformAudit(control, { actorId: platformOf(req).adminId, schoolId: sid, action: 'branding.update', entityType: 'branding', entityId: sid });
     return r.rows[0];
@@ -129,25 +197,72 @@ export async function platformRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/platform/schools/:id/subscription', guard, async (req) => {
     const { id: sid } = parse(z.object({ id }), req.params);
-    const pay = (await control.query(`SELECT plan_code, amount_minor, currency, method, reference, received_on, period_start, period_end, created_at FROM subscription_payments WHERE school_id = $1 ORDER BY created_at DESC LIMIT 50`, [sid])).rows;
-    const ev = (await control.query(`SELECT event, from_status, to_status, note, created_at FROM subscription_events WHERE school_id = $1 ORDER BY created_at DESC LIMIT 50`, [sid])).rows;
+    const pay = (
+      await control.query(
+        `SELECT plan_code, amount_minor, currency, method, reference, received_on, period_start, period_end, created_at FROM subscription_payments WHERE school_id = $1 ORDER BY created_at DESC LIMIT 50`,
+        [sid],
+      )
+    ).rows;
+    const ev = (
+      await control.query(
+        `SELECT event, from_status, to_status, note, created_at FROM subscription_events WHERE school_id = $1 ORDER BY created_at DESC LIMIT 50`,
+        [sid],
+      )
+    ).rows;
     return { subscription: subView(await subOf(sid)), payments: pay, events: ev };
   });
 
   app.post('/platform/schools/:id/subscription/payments', guard, async (req, reply) => {
     const { id: sid } = parse(z.object({ id }), req.params);
-    const b = parse(z.object({ plan: z.enum(['monthly', 'annual']), amount_minor: z.number().int().min(0), currency: z.string().regex(/^[A-Z]{3}$/), method: z.string().min(1).max(40), reference: z.string().min(1).max(100), received_on: date }), req.body);
+    const b = parse(
+      z.object({
+        plan: z.enum(['monthly', 'annual']),
+        amount_minor: z.number().int().min(0),
+        currency: z.string().regex(/^[A-Z]{3}$/),
+        method: z.string().min(1).max(40),
+        reference: z.string().min(1).max(100),
+        received_on: date,
+      }),
+      req.body,
+    );
     await subOf(sid);
-    const r = await recordPayment(control, { schoolId: sid, plan: b.plan, amountMinor: b.amount_minor, currency: b.currency, method: b.method, reference: b.reference, receivedOn: b.received_on, actorId: platformOf(req).adminId, today: entitlements.today() });
+    const r = await recordPayment(control, {
+      schoolId: sid,
+      plan: b.plan,
+      amountMinor: b.amount_minor,
+      currency: b.currency,
+      method: b.method,
+      reference: b.reference,
+      receivedOn: b.received_on,
+      actorId: platformOf(req).adminId,
+      today: entitlements.today(),
+    });
     entitlements.invalidate(sid);
     return reply.status(r.replayed ? 200 : 201).send(r);
   });
 
   const setStatus = async (sid: string, actor: string, to: 'suspended' | 'active' | 'cancelled', event: string, note: string | null) => {
     const cur = await subOf(sid);
-    await control.query(`UPDATE subscriptions SET status = $2, cancelled_at = CASE WHEN $2 = 'cancelled' THEN now() ELSE cancelled_at END WHERE school_id = $1`, [sid, to]);
-    await control.query(`INSERT INTO subscription_events (school_id, event, from_status, to_status, actor_id, note) VALUES ($1,$2,$3,$4,$5,$6)`, [sid, event, cur.status, to, actor, note]);
-    await platformAudit(control, { actorId: actor, schoolId: sid, action: `subscription.${event}`, entityType: 'subscription', entityId: cur.id, metadata: { note } });
+    await control.query(
+      `UPDATE subscriptions SET status = $2, cancelled_at = CASE WHEN $2 = 'cancelled' THEN now() ELSE cancelled_at END WHERE school_id = $1`,
+      [sid, to],
+    );
+    await control.query(`INSERT INTO subscription_events (school_id, event, from_status, to_status, actor_id, note) VALUES ($1,$2,$3,$4,$5,$6)`, [
+      sid,
+      event,
+      cur.status,
+      to,
+      actor,
+      note,
+    ]);
+    await platformAudit(control, {
+      actorId: actor,
+      schoolId: sid,
+      action: `subscription.${event}`,
+      entityType: 'subscription',
+      entityId: cur.id,
+      metadata: { note },
+    });
     entitlements.invalidate(sid);
     return subView(await subOf(sid));
   };
@@ -171,7 +286,18 @@ export async function platformRoutes(app: FastifyInstance): Promise<void> {
   });
   app.patch('/platform/schools/:id/subscription/terms', guard, async (req) => {
     const { id: sid } = parse(z.object({ id }), req.params);
-    const b = parse(z.object({ grace_days: z.number().int().min(0).max(90), readonly_days: z.number().int().min(0).max(365), retention_days: z.number().int().min(0).max(3650), legal_hold: z.boolean() }).partial().refine((x) => Object.keys(x).length > 0, 'nothing to update'), req.body);
+    const b = parse(
+      z
+        .object({
+          grace_days: z.number().int().min(0).max(90),
+          readonly_days: z.number().int().min(0).max(365),
+          retention_days: z.number().int().min(0).max(3650),
+          legal_hold: z.boolean(),
+        })
+        .partial()
+        .refine((x) => Object.keys(x).length > 0, 'nothing to update'),
+      req.body,
+    );
     await subOf(sid);
     const cols = Object.keys(b);
     await control.query(`UPDATE subscriptions SET ${cols.map((c, i) => `${c} = $${i + 2}`).join(', ')} WHERE school_id = $1`, [sid, ...Object.values(b)]);
@@ -181,26 +307,63 @@ export async function platformRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // ------------------------------------------------------------------ releases and build profiles
-  app.get('/platform/releases', guard, async () => ({ items: (await control.query(`SELECT version, channel, min_supported_version, notes, created_at FROM app_releases ORDER BY created_at DESC LIMIT 50`)).rows }));
+  app.get('/platform/releases', guard, async () => ({
+    items: (await control.query(`SELECT version, channel, min_supported_version, notes, created_at FROM app_releases ORDER BY created_at DESC LIMIT 50`)).rows,
+  }));
   app.post('/platform/releases', guard, async (req, reply) => {
-    const b = parse(z.object({ version: z.string().regex(/^\d+\.\d+\.\d+$/), channel: z.enum(['stable', 'beta']).default('stable'), min_supported_version: z.string().regex(/^\d+\.\d+\.\d+$/), notes: z.string().max(2000).optional() }), req.body);
-    await control.query(`INSERT INTO app_releases (version, channel, min_supported_version, notes, published_by) VALUES ($1,$2,$3,$4,$5)`, [b.version, b.channel, b.min_supported_version, b.notes ?? null, platformOf(req).adminId]);
+    const b = parse(
+      z.object({
+        version: z.string().regex(/^\d+\.\d+\.\d+$/),
+        channel: z.enum(['stable', 'beta']).default('stable'),
+        min_supported_version: z.string().regex(/^\d+\.\d+\.\d+$/),
+        notes: z.string().max(2000).optional(),
+      }),
+      req.body,
+    );
+    await control.query(`INSERT INTO app_releases (version, channel, min_supported_version, notes, published_by) VALUES ($1,$2,$3,$4,$5)`, [
+      b.version,
+      b.channel,
+      b.min_supported_version,
+      b.notes ?? null,
+      platformOf(req).adminId,
+    ]);
     await platformAudit(control, { actorId: platformOf(req).adminId, action: 'release.publish', entityType: 'release', entityId: b.version });
     return reply.status(201).send(b);
   });
   app.put('/platform/schools/:id/build-profiles/:platform', guard, async (req) => {
     const p = parse(z.object({ id, platform: z.enum(['android', 'windows', 'linux']) }), req.params);
-    const b = parse(z.object({ app_id: z.string().regex(/^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)+$/).max(100), app_name: z.string().min(2).max(40) }), req.body);
+    const b = parse(
+      z.object({
+        app_id: z
+          .string()
+          .regex(/^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)+$/)
+          .max(100),
+        app_name: z.string().min(2).max(40),
+      }),
+      req.body,
+    );
     const r = await control.query(
       `INSERT INTO school_build_profiles (school_id, platform, app_id, app_name) SELECT s.id,$2,$3,$4 FROM schools s WHERE s.id = $1
        ON CONFLICT (school_id, platform) DO UPDATE SET app_id = EXCLUDED.app_id, app_name = EXCLUDED.app_name RETURNING platform, app_id, app_name`,
       [p.id, p.platform, b.app_id, b.app_name],
     );
     if (!r.rows[0]) throw notFound('School');
-    await platformAudit(control, { actorId: platformOf(req).adminId, schoolId: p.id, action: 'build_profile.set', entityType: 'build_profile', entityId: p.platform });
+    await platformAudit(control, {
+      actorId: platformOf(req).adminId,
+      schoolId: p.id,
+      action: 'build_profile.set',
+      entityType: 'build_profile',
+      entityId: p.platform,
+    });
     return r.rows[0];
   });
 
-  app.get('/platform/audit', guard, async () => ({ items: (await control.query(`SELECT id, actor_id, school_id, action, entity_type, entity_id, metadata, created_at FROM platform_audit_events ORDER BY created_at DESC LIMIT 200`)).rows }));
+  app.get('/platform/audit', guard, async () => ({
+    items: (
+      await control.query(
+        `SELECT id, actor_id, school_id, action, entity_type, entity_id, metadata, created_at FROM platform_audit_events ORDER BY created_at DESC LIMIT 200`,
+      )
+    ).rows,
+  }));
   void storedStatusFor;
 }

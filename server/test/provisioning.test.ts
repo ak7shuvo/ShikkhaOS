@@ -3,7 +3,17 @@ import os from 'node:os';
 import path from 'node:path';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { checkSchoolHealth, dbNameFor, migrateSchool, provisionSchool, ProvisioningBusyError, roleNameFor, rotateSchoolSecret, urlForDb, type Step } from '../src/provisioning.js';
+import {
+  checkSchoolHealth,
+  dbNameFor,
+  migrateSchool,
+  provisionSchool,
+  ProvisioningBusyError,
+  roleNameFor,
+  rotateSchoolSecret,
+  urlForDb,
+  type Step,
+} from '../src/provisioning.js';
 import { SCHOOL_MIGRATIONS_DIR } from '../src/migrate.js';
 import { REGISTRY_COLUMNS, TenantRouter, TenantUnavailableError, type RegistryEntry } from '../src/tenancy.js';
 import { SecretBox, generateMasterKey, loadMasterKeys } from '../src/secrets.js';
@@ -30,12 +40,21 @@ describe('provisioning a dedicated school database', () => {
     expect(result.step).toBe('active');
     expect(result.adminInitialPassword).toMatch(/^.{20}$/);
     const e = await entry(id);
-    expect(e).toMatchObject({ status: 'active', db_mode: 'dedicated', db_name: dbNameFor(id), db_role: roleNameFor(id), provisioning_step: 'active', schema_version: '002_session_idle.sql' });
+    expect(e).toMatchObject({
+      status: 'active',
+      db_mode: 'dedicated',
+      db_name: dbNameFor(id),
+      db_role: roleNameFor(id),
+      provisioning_step: 'active',
+      schema_version: '002_session_idle.sql',
+    });
     expect(e.db_secret_enc).toMatch(/^v1\.k1\./);
     expect(JSON.stringify(e)).not.toContain(f.deps.secrets.decrypt(e.db_secret_enc!, id));
     expect(await dbExists(dbNameFor(id))).toBe(true);
 
-    const role = (await f.admin.query('SELECT rolsuper, rolbypassrls, rolcreatedb, rolcreaterole, rolcanlogin FROM pg_roles WHERE rolname = $1', [roleNameFor(id)])).rows[0];
+    const role = (
+      await f.admin.query('SELECT rolsuper, rolbypassrls, rolcreatedb, rolcreaterole, rolcanlogin FROM pg_roles WHERE rolname = $1', [roleNameFor(id)])
+    ).rows[0];
     expect(role).toEqual({ rolsuper: false, rolbypassrls: false, rolcreatedb: false, rolcreaterole: false, rolcanlogin: true });
 
     const sdb = new pg.Client({ connectionString: urlForDb(f.deps.adminUrl, dbNameFor(id)) });
@@ -59,7 +78,15 @@ describe('provisioning a dedicated school database', () => {
     const { id } = await provisionNew(f, 'health');
     const h = await checkSchoolHealth(f.deps, await entry(id));
     expect(h.ok, JSON.stringify(h.checks)).toBe(true);
-    expect(h.checks.map((c) => c.name)).toEqual(expect.arrayContaining(['connect_as_school_role', 'role_is_restricted', 'single_school_row_matches_registry', 'no_connect_privilege_on_other_school_databases', 'migrations_current']));
+    expect(h.checks.map((c) => c.name)).toEqual(
+      expect.arrayContaining([
+        'connect_as_school_role',
+        'role_is_restricted',
+        'single_school_row_matches_registry',
+        'no_connect_privilege_on_other_school_databases',
+        'migrations_current',
+      ]),
+    );
   });
 
   it('rejects invalid slugs and duplicates at registration', async () => {
@@ -124,7 +151,12 @@ describe('recovery from partial failures', () => {
   for (const step of STEPS_TO_BREAK) {
     it(`crash after "${step}": status failed with an error, resume completes with no duplicates`, async () => {
       const { id, slug } = await registerNew(f, `crash-${step}`.replace('_', ''));
-      const crashing = { ...f.deps, afterStep: (s: Step) => { if (s === step) throw new Error(`simulated crash after ${s}`); } };
+      const crashing = {
+        ...f.deps,
+        afterStep: (s: Step) => {
+          if (s === step) throw new Error(`simulated crash after ${s}`);
+        },
+      };
       await expect(provisionSchool(crashing, id)).rejects.toThrow(/simulated crash/);
       let e = await entry(id);
       expect(e.status).toBe('failed');
@@ -148,7 +180,12 @@ describe('recovery from partial failures', () => {
 
   it('a crash after the admin row was written never creates a second admin (the unrecorded initial password must be reset by an operator)', async () => {
     const { id } = await registerNew(f, 'lostpw');
-    const crashing = { ...f.deps, afterStep: (s: Step) => { if (s === 'seeded') throw new Error('crash'); } };
+    const crashing = {
+      ...f.deps,
+      afterStep: (s: Step) => {
+        if (s === 'seeded') throw new Error('crash');
+      },
+    };
     await expect(provisionSchool(crashing, id)).rejects.toThrow();
     const r = await provisionSchool(f.deps, id);
     expect(r.adminInitialPassword).toBeUndefined(); // admin already exists; password was never persisted anywhere
@@ -243,7 +280,13 @@ describe('credential rotation and master-key handling', () => {
 
   it('crash between ALTER ROLE and promotion: router falls back to the pending secret; rotate resumes', async () => {
     const { id } = await provisionNew(f, 'rotcrash');
-    await expect(rotateSchoolSecret(f.deps, id, { afterPending: () => { throw new Error('crash before ALTER'); } })).rejects.toThrow();
+    await expect(
+      rotateSchoolSecret(f.deps, id, {
+        afterPending: () => {
+          throw new Error('crash before ALTER');
+        },
+      }),
+    ).rejects.toThrow();
     let e = await entry(id);
     expect(e.db_secret_pending_enc).toBeTruthy();
     // simulate: ALTER ROLE ran but the registry was not promoted
@@ -306,7 +349,14 @@ describe('credential rotation and master-key handling', () => {
   it('non-active schools are not routable', async () => {
     const router = routerFor();
     const base = await entry((await provisionNew(f, 'status')).id);
-    for (const [status, code] of [['requested', 'TENANT_NOT_READY'], ['provisioning', 'TENANT_NOT_READY'], ['failed', 'TENANT_NOT_READY'], ['suspended', 'SCHOOL_SUSPENDED'], ['offboarding', 'SCHOOL_OFFBOARDED'], ['archived', 'SCHOOL_OFFBOARDED']] as const) {
+    for (const [status, code] of [
+      ['requested', 'TENANT_NOT_READY'],
+      ['provisioning', 'TENANT_NOT_READY'],
+      ['failed', 'TENANT_NOT_READY'],
+      ['suspended', 'SCHOOL_SUSPENDED'],
+      ['offboarding', 'SCHOOL_OFFBOARDED'],
+      ['archived', 'SCHOOL_OFFBOARDED'],
+    ] as const) {
       try {
         router.assertRoutable({ ...base, status });
         expect.unreachable();

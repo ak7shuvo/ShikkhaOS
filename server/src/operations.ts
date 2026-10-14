@@ -56,7 +56,12 @@ async function tableCounts(url: string): Promise<Record<string, number>> {
 }
 
 /** Full logical backup/export of one school database with an integrity manifest. Uses the privileged connection (operator only). */
-export async function exportSchool(d: ProvisionDeps, schoolId: string, outDir: string, now = new Date()): Promise<{ manifestPath: string; manifest: ExportManifest }> {
+export async function exportSchool(
+  d: ProvisionDeps,
+  schoolId: string,
+  outDir: string,
+  now = new Date(),
+): Promise<{ manifestPath: string; manifest: ExportManifest }> {
   const e = await loadEntry(d, schoolId);
   if (e.db_mode !== 'dedicated' || !e.db_name) throw new Error('only dedicated school databases can be exported with this procedure');
   fs.mkdirSync(outDir, { recursive: true, mode: 0o700 });
@@ -79,7 +84,14 @@ export async function exportSchool(d: ProvisionDeps, schoolId: string, outDir: s
   };
   const manifestPath = `${dump}.manifest.json`;
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), { mode: 0o600 });
-  await platformAudit(d.control, { actorId: null, schoolId, action: 'school.exported', entityType: 'school', entityId: schoolId, metadata: { dump_sha256: manifest.dump_sha256 } });
+  await platformAudit(d.control, {
+    actorId: null,
+    schoolId,
+    action: 'school.exported',
+    entityType: 'school',
+    entityId: schoolId,
+    metadata: { dump_sha256: manifest.dump_sha256 },
+  });
   return { manifestPath, manifest };
 }
 
@@ -88,7 +100,11 @@ export async function exportSchool(d: ProvisionDeps, schoolId: string, outDir: s
  * Restoring over a live school database is intentionally not offered here: restore to a scratch database,
  * verify, then swap during a maintenance window (see docs/SCHOOL_PROVISIONING.md).
  */
-export async function restoreDump(d: ProvisionDeps, manifestPath: string, targetDb: string): Promise<{ ok: boolean; mismatches: string[]; placeholder_role_created: string | null }> {
+export async function restoreDump(
+  d: ProvisionDeps,
+  manifestPath: string,
+  targetDb: string,
+): Promise<{ ok: boolean; mismatches: string[]; placeholder_role_created: string | null }> {
   if (!/^[a-z][a-z0-9_]{2,40}$/.test(targetDb)) throw new Error('invalid target database name');
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as ExportManifest;
   const dump = path.join(path.dirname(manifestPath), manifest.dump_file);
@@ -97,7 +113,8 @@ export async function restoreDump(d: ProvisionDeps, manifestPath: string, target
   const admin = new pg.Client({ connectionString: d.adminUrl });
   await admin.connect();
   try {
-    if ((await admin.query(`SELECT 1 FROM pg_database WHERE datname = $1`, [targetDb])).rowCount) throw new Error('target database already exists; refusing to restore over it');
+    if ((await admin.query(`SELECT 1 FROM pg_database WHERE datname = $1`, [targetDb])).rowCount)
+      throw new Error('target database already exists; refusing to restore over it');
     await admin.query(`CREATE DATABASE "${targetDb}"`);
     // The dump carries GRANTs to the school's login role. If that role no longer exists (e.g. after offboarding),
     // a NOLOGIN placeholder lets the restore complete faithfully; it can never connect.
@@ -113,7 +130,9 @@ export async function restoreDump(d: ProvisionDeps, manifestPath: string, target
   // Grants to the school role are restored with the dump; that role must exist (it does for the same school).
   await run('pg_restore', [...args, '--no-owner', '--exit-on-error', '-d', targetDb, dump], { env });
   const counts = await tableCounts(urlForDb(d.adminUrl, targetDb));
-  const mismatches = Object.entries(manifest.table_counts).filter(([t, n]) => counts[t] !== n).map(([t]) => t);
+  const mismatches = Object.entries(manifest.table_counts)
+    .filter(([t, n]) => counts[t] !== n)
+    .map(([t]) => t);
   return { ok: mismatches.length === 0, mismatches, placeholder_role_created: placeholder };
 }
 
@@ -134,7 +153,11 @@ export async function startOffboarding(d: ProvisionDeps, schoolId: string, actor
   const e = await loadEntry(d, schoolId);
   if (!['active', 'suspended'].includes(e.status)) throw new Error(`cannot start offboarding from "${e.status}"`);
   await d.control.query(`UPDATE schools SET status = 'offboarding' WHERE id = $1`, [schoolId]);
-  await d.control.query(`INSERT INTO subscription_events (school_id, event, actor_id, note) VALUES ($1,'offboarding_started',$2,$3)`, [schoolId, actorId, reason]);
+  await d.control.query(`INSERT INTO subscription_events (school_id, event, actor_id, note) VALUES ($1,'offboarding_started',$2,$3)`, [
+    schoolId,
+    actorId,
+    reason,
+  ]);
   await platformAudit(d.control, { actorId, schoolId, action: 'school.offboarding_started', entityType: 'school', entityId: schoolId, metadata: { reason } });
 }
 
@@ -158,11 +181,16 @@ export async function finalizeOffboarding(d: ProvisionDeps, schoolId: string, o:
   if (o.confirmSlug !== e.slug) throw new Error('confirmation slug does not match');
   if (e.status !== 'offboarding') throw new Error('school must be in offboarding status first');
   if (e.db_mode !== 'dedicated' || !e.db_name || !e.db_role) throw new Error('only dedicated databases can be deleted; migrate shared schools first');
-  const sub = (await d.control.query(`SELECT status, period_end, grace_days, readonly_days, retention_days, legal_hold FROM subscriptions WHERE school_id = $1`, [schoolId])).rows[0] as SubscriptionRow | undefined;
+  const sub = (
+    await d.control.query(`SELECT status, period_end, grace_days, readonly_days, retention_days, legal_hold FROM subscriptions WHERE school_id = $1`, [
+      schoolId,
+    ])
+  ).rows[0] as SubscriptionRow | undefined;
   if (!sub) throw new Error('no subscription on record; refusing to delete');
   const ent = entitlementOf(sub, o.today);
   if (sub.legal_hold) throw new Error('legal hold is set; deletion is not permitted');
-  if (!ent.deletion_allowed_from || o.today < ent.deletion_allowed_from) throw new Error(`retention window has not elapsed; deletion allowed from ${ent.deletion_allowed_from}`);
+  if (!ent.deletion_allowed_from || o.today < ent.deletion_allowed_from)
+    throw new Error(`retention window has not elapsed; deletion allowed from ${ent.deletion_allowed_from}`);
 
   // Final export, verified by an actual restore into a scratch database.
   const { manifestPath, manifest } = await exportSchool(d, schoolId, o.exportDir);
@@ -180,8 +208,19 @@ export async function finalizeOffboarding(d: ProvisionDeps, schoolId: string, o:
     await admin.end();
   }
   await d.control.query(`UPDATE schools SET status = 'archived', db_secret_enc = NULL, db_secret_pending_enc = NULL WHERE id = $1`, [schoolId]);
-  await d.control.query(`INSERT INTO subscription_events (school_id, event, actor_id, note) VALUES ($1,'offboarded',$2,$3)`, [schoolId, o.actorId, `database deleted; export sha256 ${manifest.dump_sha256}`]);
-  await platformAudit(d.control, { actorId: o.actorId, schoolId, action: 'school.offboarded', entityType: 'school', entityId: schoolId, metadata: { export_sha256: manifest.dump_sha256, retention_until: addDays(sub.period_end, sub.retention_days) } });
+  await d.control.query(`INSERT INTO subscription_events (school_id, event, actor_id, note) VALUES ($1,'offboarded',$2,$3)`, [
+    schoolId,
+    o.actorId,
+    `database deleted; export sha256 ${manifest.dump_sha256}`,
+  ]);
+  await platformAudit(d.control, {
+    actorId: o.actorId,
+    schoolId,
+    action: 'school.offboarded',
+    entityType: 'school',
+    entityId: schoolId,
+    metadata: { export_sha256: manifest.dump_sha256, retention_until: addDays(sub.period_end, sub.retention_days) },
+  });
   return { manifestPath };
 }
 
@@ -194,7 +233,10 @@ export async function resetSchoolAccountPassword(d: ProvisionDeps, schoolId: str
   const c = new pg.Client({ connectionString: urlForDb(d.adminUrl, e.db_name) });
   await c.connect();
   try {
-    const u = await c.query(`UPDATE users SET password_hash = $2, failed_login_count = 0, locked_until = NULL WHERE email = $1 RETURNING id`, [email, await hashPassword(password)]);
+    const u = await c.query(`UPDATE users SET password_hash = $2, failed_login_count = 0, locked_until = NULL WHERE email = $1 RETURNING id`, [
+      email,
+      await hashPassword(password),
+    ]);
     if (!u.rowCount) throw new Error('no such account in this school');
     await c.query(`DELETE FROM sessions WHERE user_id = $1`, [u.rows[0].id]);
   } finally {

@@ -20,7 +20,12 @@ function decodeKey(b64: string, label: string): Buffer {
   return k;
 }
 
-export function loadMasterKeys(env: { PETRA_MASTER_KEY: string; PETRA_MASTER_KEY_ID: string; PETRA_MASTER_KEY_PREVIOUS?: string; PETRA_MASTER_KEY_PREVIOUS_ID?: string }): MasterKeys {
+export function loadMasterKeys(env: {
+  PETRA_MASTER_KEY: string;
+  PETRA_MASTER_KEY_ID: string;
+  PETRA_MASTER_KEY_PREVIOUS?: string;
+  PETRA_MASTER_KEY_PREVIOUS_ID?: string;
+}): MasterKeys {
   const keys = new Map<string, Buffer>();
   keys.set(env.PETRA_MASTER_KEY_ID, decodeKey(env.PETRA_MASTER_KEY, 'PETRA_MASTER_KEY'));
   if (env.PETRA_MASTER_KEY_PREVIOUS) {

@@ -103,7 +103,13 @@ async function run(d: ProvisionDeps, schoolId: string, seed: boolean, actorId: s
     await admin.connect();
     try {
       // ---- 1. database -------------------------------------------------------------------------
-      await d.control.query(`UPDATE schools SET db_host = $2, db_port = $3, db_name = $4, db_role = $5 WHERE id = $1`, [schoolId, host, port, dbName, roleName]);
+      await d.control.query(`UPDATE schools SET db_host = $2, db_port = $3, db_name = $4, db_role = $5 WHERE id = $1`, [
+        schoolId,
+        host,
+        port,
+        dbName,
+        roleName,
+      ]);
       const exists = (await admin.query(`SELECT 1 FROM pg_database WHERE datname = $1`, [dbName])).rowCount;
       if (!exists) await admin.query(`CREATE DATABASE ${ident(dbName)}`);
       await admin.query(`REVOKE ALL ON DATABASE ${ident(dbName)} FROM PUBLIC`); // nobody but explicit grantees may connect
@@ -120,7 +126,9 @@ async function run(d: ProvisionDeps, schoolId: string, seed: boolean, actorId: s
       secret = d.secrets.decrypt(e.db_secret_enc!, schoolId);
       const pw = (await admin.query('SELECT quote_literal($1) AS q', [secret])).rows[0].q as string;
       const roleExists = (await admin.query(`SELECT 1 FROM pg_roles WHERE rolname = $1`, [roleName])).rowCount;
-      await admin.query(`${roleExists ? 'ALTER' : 'CREATE'} ROLE ${ident(roleName)} LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION CONNECTION LIMIT 20 PASSWORD ${pw}`);
+      await admin.query(
+        `${roleExists ? 'ALTER' : 'CREATE'} ROLE ${ident(roleName)} LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION CONNECTION LIMIT 20 PASSWORD ${pw}`,
+      );
       await admin.query(`ALTER ROLE ${ident(roleName)} SET statement_timeout = '30s'`);
       await admin.query(`ALTER ROLE ${ident(roleName)} SET idle_in_transaction_session_timeout = '60s'`);
       await admin.query(`GRANT CONNECT ON DATABASE ${ident(dbName)} TO ${ident(roleName)}`);
@@ -147,7 +155,12 @@ async function run(d: ProvisionDeps, schoolId: string, seed: boolean, actorId: s
           if (!has) {
             adminInitialPassword = generateDbPassword().slice(0, 20);
             const uid = randomUUID();
-            await sdb.query(`INSERT INTO users (id, email, password_hash, full_name) VALUES ($1,$2,$3,$4)`, [uid, e.admin_email, await hashPassword(adminInitialPassword), e.admin_name ?? 'School Admin']);
+            await sdb.query(`INSERT INTO users (id, email, password_hash, full_name) VALUES ($1,$2,$3,$4)`, [
+              uid,
+              e.admin_email,
+              await hashPassword(adminInitialPassword),
+              e.admin_name ?? 'School Admin',
+            ]);
             await sdb.query(`INSERT INTO school_memberships (school_id, user_id, role) VALUES ($1,$2,'school_admin')`, [schoolId, uid]);
           }
         }
@@ -159,14 +172,31 @@ async function run(d: ProvisionDeps, schoolId: string, seed: boolean, actorId: s
 
     // ---- 5. health check then activate ---------------------------------------------------------
     const health = await checkSchoolHealth(d, await loadEntry(d.control, schoolId), { requireSchoolRow: seed });
-    if (!health.ok) throw new Error(`health check failed: ${health.checks.filter((c) => !c.ok).map((c) => c.name).join(', ')}`);
-    await d.control.query(`UPDATE schools SET schema_version = $2, provisioning_error = NULL, provisioning_step = 'active', status = CASE WHEN db_mode = 'dedicated' THEN 'active' ELSE status END WHERE id = $1`, [schoolId, health.schema_version]);
-    await platformAudit(d.control, { actorId, schoolId, action: 'school.provisioned', entityType: 'school', entityId: schoolId, metadata: { db_name: dbName, schema_version: health.schema_version } });
+    if (!health.ok)
+      throw new Error(
+        `health check failed: ${health.checks
+          .filter((c) => !c.ok)
+          .map((c) => c.name)
+          .join(', ')}`,
+      );
+    await d.control.query(
+      `UPDATE schools SET schema_version = $2, provisioning_error = NULL, provisioning_step = 'active', status = CASE WHEN db_mode = 'dedicated' THEN 'active' ELSE status END WHERE id = $1`,
+      [schoolId, health.schema_version],
+    );
+    await platformAudit(d.control, {
+      actorId,
+      schoolId,
+      action: 'school.provisioned',
+      entityType: 'school',
+      entityId: schoolId,
+      metadata: { db_name: dbName, schema_version: health.schema_version },
+    });
     await d.afterStep?.('active');
     return { schoolId, step: 'active', adminInitialPassword };
   } catch (err) {
     const msg = redact((err as Error).message).slice(0, 500);
-    if (!keepStatus) await d.control.query(`UPDATE schools SET status = 'failed', provisioning_error = $2 WHERE id = $1`, [schoolId, msg]).catch(() => undefined);
+    if (!keepStatus)
+      await d.control.query(`UPDATE schools SET status = 'failed', provisioning_error = $2 WHERE id = $1`, [schoolId, msg]).catch(() => undefined);
     else await d.control.query(`UPDATE schools SET provisioning_error = $2 WHERE id = $1`, [schoolId, msg]).catch(() => undefined);
     throw new Error(msg);
   }
@@ -180,7 +210,11 @@ export interface HealthReport {
 }
 
 /** Connects with the school's OWN runtime credential (as the API would) and verifies isolation basics. */
-export async function checkSchoolHealth(d: Pick<ProvisionDeps, 'control' | 'secrets' | 'adminUrl' | 'schoolMigrationsDir'>, e: RegistryEntry, opts: { requireSchoolRow?: boolean } = {}): Promise<HealthReport> {
+export async function checkSchoolHealth(
+  d: Pick<ProvisionDeps, 'control' | 'secrets' | 'adminUrl' | 'schoolMigrationsDir'>,
+  e: RegistryEntry,
+  opts: { requireSchoolRow?: boolean } = {},
+): Promise<HealthReport> {
   const checks: HealthReport['checks'] = [];
   const add = (name: string, ok: boolean, detail?: string) => checks.push({ name, ok, detail });
   let schemaVersion: string | null = null;
@@ -188,12 +222,23 @@ export async function checkSchoolHealth(d: Pick<ProvisionDeps, 'control' | 'secr
   if (!e.db_name || !e.db_role || !e.db_secret_enc) {
     return { ok: false, schema_version: null, pending_migrations: [], checks: [{ name: 'dedicated_database_configured', ok: false }] };
   }
-  const c = new pg.Client({ host: e.db_host!, port: e.db_port!, database: e.db_name, user: e.db_role, password: d.secrets.decrypt(e.db_secret_enc, e.id), connectionTimeoutMillis: 5000 });
+  const c = new pg.Client({
+    host: e.db_host!,
+    port: e.db_port!,
+    database: e.db_name,
+    user: e.db_role,
+    password: d.secrets.decrypt(e.db_secret_enc, e.id),
+    connectionTimeoutMillis: 5000,
+  });
   try {
     const t0 = Date.now();
     await c.connect();
     add('connect_as_school_role', true, `${Date.now() - t0}ms`);
-    const who = (await c.query(`SELECT current_database() AS d, current_user AS u, r.rolsuper, r.rolbypassrls, r.rolcreatedb, r.rolcreaterole FROM pg_roles r WHERE r.rolname = current_user`)).rows[0];
+    const who = (
+      await c.query(
+        `SELECT current_database() AS d, current_user AS u, r.rolsuper, r.rolbypassrls, r.rolcreatedb, r.rolcreaterole FROM pg_roles r WHERE r.rolname = current_user`,
+      )
+    ).rows[0];
     add('lands_on_registered_database', who.d === e.db_name && who.u === e.db_role);
     add('role_is_restricted', !who.rolsuper && !who.rolbypassrls && !who.rolcreatedb && !who.rolcreaterole);
     await c.query('BEGIN');
@@ -201,7 +246,12 @@ export async function checkSchoolHealth(d: Pick<ProvisionDeps, 'control' | 'secr
     const rows = (await c.query(`SELECT id FROM schools`)).rows;
     await c.query('COMMIT');
     add('single_school_row_matches_registry', opts.requireSchoolRow === false ? true : rows.length === 1 && rows[0].id === e.id, `rows=${rows.length}`);
-    const others = (await c.query(`SELECT count(*)::int AS n FROM pg_database WHERE datname LIKE 'sk\\_%' AND datname <> $1 AND has_database_privilege(current_user, datname, 'CONNECT')`, [e.db_name])).rows[0].n;
+    const others = (
+      await c.query(
+        `SELECT count(*)::int AS n FROM pg_database WHERE datname LIKE 'sk\\_%' AND datname <> $1 AND has_database_privilege(current_user, datname, 'CONNECT')`,
+        [e.db_name],
+      )
+    ).rows[0].n;
     add('no_connect_privilege_on_other_school_databases', others === 0, `others=${others}`);
   } catch (err) {
     add('connect_as_school_role', false, (err as Error).message.slice(0, 120));
@@ -224,7 +274,11 @@ export async function migrateSchool(d: ProvisionDeps, schoolId: string): Promise
   const e = await loadEntry(d.control, schoolId);
   if (e.db_mode !== 'dedicated' || !e.db_name || !e.db_role) throw new Error('school has no dedicated database');
   const applied = await migrate(urlForDb(d.adminUrl, e.db_name), { dir: d.schoolMigrationsDir ?? SCHOOL_MIGRATIONS_DIR, appRole: e.db_role, lockKey: 727003 });
-  if (applied.length) await d.control.query(`UPDATE schools SET schema_version = $2 WHERE id = $1`, [schoolId, (await appliedMigrations(urlForDb(d.adminUrl, e.db_name))).at(-1)]);
+  if (applied.length)
+    await d.control.query(`UPDATE schools SET schema_version = $2 WHERE id = $1`, [
+      schoolId,
+      (await appliedMigrations(urlForDb(d.adminUrl, e.db_name))).at(-1),
+    ]);
   return applied;
 }
 

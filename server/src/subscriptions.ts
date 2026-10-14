@@ -17,8 +17,19 @@ export async function sweepSubscriptions(control: Db, today: string): Promise<{ 
     if (to !== r.status) {
       const u = await control.query(`UPDATE subscriptions SET status = $2 WHERE school_id = $1 AND status = $3`, [r.school_id, to, r.status]);
       if (u.rowCount) {
-        await control.query(`INSERT INTO subscription_events (school_id, event, from_status, to_status, note) VALUES ($1,'status_derived',$2,$3,$4)`, [r.school_id, r.status, to, `sweep ${today}: ${e.reason}`]);
-        await platformAudit(control, { actorId: null, schoolId: r.school_id, action: 'subscription.sweep', entityType: 'subscription', metadata: { from: r.status, to, reason: e.reason } });
+        await control.query(`INSERT INTO subscription_events (school_id, event, from_status, to_status, note) VALUES ($1,'status_derived',$2,$3,$4)`, [
+          r.school_id,
+          r.status,
+          to,
+          `sweep ${today}: ${e.reason}`,
+        ]);
+        await platformAudit(control, {
+          actorId: null,
+          schoolId: r.school_id,
+          action: 'subscription.sweep',
+          entityType: 'subscription',
+          metadata: { from: r.status, to, reason: e.reason },
+        });
         changed.push({ school_id: r.school_id, from: r.status, to });
       }
     }

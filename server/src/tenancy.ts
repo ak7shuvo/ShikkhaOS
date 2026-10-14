@@ -1,5 +1,4 @@
 import pg from 'pg';
-import type { Config } from './config.js';
 import { assertRestrictedRole, type Db } from './db.js';
 import { SecretBox } from './secrets.js';
 
@@ -174,7 +173,11 @@ export class TenantRouter {
       return await fn();
     } catch (err) {
       const e = err as { code?: string };
-      const connectivity = ['ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'ECONNRESET'].includes(e.code ?? '') || /^(08|28|57)/.test(e.code ?? '') || e.code === '42501' || (err as Error).message?.includes('Connection terminated');
+      const connectivity =
+        ['ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'ECONNRESET'].includes(e.code ?? '') ||
+        /^(08|28|57)/.test(e.code ?? '') ||
+        e.code === '42501' ||
+        (err as Error).message?.includes('Connection terminated');
       if (!connectivity) throw err;
       await this.invalidate(entry.id);
       throw new TenantUnavailableError('TENANT_UNAVAILABLE', 'School database is unavailable');

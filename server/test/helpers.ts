@@ -45,8 +45,14 @@ export async function harness(over: Record<string, string> = {}): Promise<Harnes
   const app = await buildApp(testEnv(over), control, { sharedPool: pool, now: () => clock.now });
   await app.ready();
   return {
-    app, pool, control, owner, clock,
-    setToday: (d) => { clock.now = new Date(`${d}T06:00:00Z`); },
+    app,
+    pool,
+    control,
+    owner,
+    clock,
+    setToday: (d) => {
+      clock.now = new Date(`${d}T06:00:00Z`);
+    },
     close: async () => {
       await app.close();
       await pool.end();
@@ -104,15 +110,25 @@ export const uniqueCode = (p: string) => `${p}-${Date.now().toString(36)}${n++}`
 export async function seed(h: Harness, prefix: string): Promise<SeededSchool> {
   const s = await seedSchool(h.owner, { code: uniqueCode(prefix), name: `School ${prefix}`, password: PASSWORD });
   await registerSchool(h.control, {
-    slug: s.code, name: `School ${prefix}`, adminEmail: s.users.admin.email, adminName: 'Demo Admin', createdBy: null,
-    today: todayIn('Asia/Dhaka', h.clock.now), trialDays: 30, shared: { schoolId: s.schoolId },
+    slug: s.code,
+    name: `School ${prefix}`,
+    adminEmail: s.users.admin.email,
+    adminName: 'Demo Admin',
+    createdBy: null,
+    today: todayIn('Asia/Dhaka', h.clock.now),
+    trialDays: 30,
+    shared: { schoolId: s.schoolId },
   });
   await h.control.query(`UPDATE subscriptions SET status = 'active', period_end = '2099-12-31' WHERE school_id = $1`, [s.schoolId]);
   return s;
 }
 
 /** Sets a school's subscription (control plane) directly for entitlement tests. */
-export async function setSubscription(h: Harness, schoolId: string, v: { status?: string; period_start?: string; period_end?: string; grace_days?: number; readonly_days?: number }) {
+export async function setSubscription(
+  h: Harness,
+  schoolId: string,
+  v: { status?: string; period_start?: string; period_end?: string; grace_days?: number; readonly_days?: number },
+) {
   const cols = Object.keys(v);
   await h.control.query(`UPDATE subscriptions SET ${cols.map((c, i) => `${c} = $${i + 2}`).join(', ')} WHERE school_id = $1`, [schoolId, ...Object.values(v)]);
 }

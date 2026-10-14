@@ -130,7 +130,13 @@ describe('server-side entitlement enforcement at exact date boundaries', () => {
 
   it('data is preserved indefinitely after blocking: nothing is deleted by the lapse', async () => {
     const { S } = await school('ent-keep');
-    const count = async () => (await h.owner.query(`SELECT (SELECT count(*) FROM students WHERE school_id=$1)::int AS s, (SELECT count(*) FROM users u JOIN school_memberships m ON m.user_id = u.id WHERE m.school_id=$1)::int AS u`, [S.schoolId])).rows[0];
+    const count = async () =>
+      (
+        await h.owner.query(
+          `SELECT (SELECT count(*) FROM students WHERE school_id=$1)::int AS s, (SELECT count(*) FROM users u JOIN school_memberships m ON m.user_id = u.id WHERE m.school_id=$1)::int AS u`,
+          [S.schoolId],
+        )
+      ).rows[0];
     const before = await count();
     h.setToday(day(2000));
     await sweepSubscriptions(h.control, day(2000));
@@ -155,7 +161,15 @@ describe('server-side entitlement enforcement at exact date boundaries', () => {
 
 describe('subscription lifecycle through the platform API', () => {
   const pay = (id: string, body: Record<string, unknown> = {}) =>
-    platform.post(`/platform/schools/${id}/subscription/payments`, { plan: 'monthly', amount_minor: 500000, currency: 'BDT', method: 'bank_transfer', reference: 'REF-1', received_on: '2026-04-02', ...body });
+    platform.post(`/platform/schools/${id}/subscription/payments`, {
+      plan: 'monthly',
+      amount_minor: 500000,
+      currency: 'BDT',
+      method: 'bank_transfer',
+      reference: 'REF-1',
+      received_on: '2026-04-02',
+      ...body,
+    });
 
   it('a payment during grace renews the same day and restores full access; replaying the reference is idempotent', async () => {
     const { S, admin } = await school('pay');

@@ -23,7 +23,8 @@ describe('platform (Petra) administration is separate from school administration
     const anon = new Client(h.app);
     const school = await loginAs(h, A.users.admin.email);
     for (const c of [anon, school]) {
-      for (const url of ['/platform/schools', '/platform/audit', '/platform/releases', `/platform/schools/${A.schoolId}/subscription`]) expect((await c.get(url)).status, url).toBe(401);
+      for (const url of ['/platform/schools', '/platform/audit', '/platform/releases', `/platform/schools/${A.schoolId}/subscription`])
+        expect((await c.get(url)).status, url).toBe(401);
     }
   });
 
@@ -62,7 +63,13 @@ describe('platform (Petra) administration is separate from school administration
     expect(r.body.status).toBe('requested');
     const list = await platform.get('/platform/schools');
     const row = list.body.items.find((s: any) => s.slug === slug);
-    expect(row).toMatchObject({ status: 'requested', db_mode: 'dedicated', provisioning_step: 'requested', subscription_status: 'trial', access_level: 'full' });
+    expect(row).toMatchObject({
+      status: 'requested',
+      db_mode: 'dedicated',
+      provisioning_step: 'requested',
+      subscription_status: 'trial',
+      access_level: 'full',
+    });
     expect(JSON.stringify(list.body)).not.toMatch(/db_secret|password|v1\./);
     expect((await h.control.query(`SELECT 1 FROM school_branding WHERE school_id = $1`, [r.body.id])).rowCount).toBe(1);
     // Not provisioned: nobody can log in to it yet, and the response does not reveal why.
@@ -101,7 +108,13 @@ describe('platform (Petra) administration is separate from school administration
     const r = await platform.req('PUT', `/platform/schools/${A.schoolId}/branding`, ok);
     expect(r.status).toBe(200);
     expect(r.body.primary_color).toBe('#0b6b4f');
-    for (const bad of [{ ...ok, primary_color: '#ffff00' }, { ...ok, primary_color: 'red' }, { ...ok, logo_url: 'javascript:alert(1)' }, { ...ok, logo_url: 'http://insecure.example.test/x.png' }, { ...ok, display_name: 'x' }]) {
+    for (const bad of [
+      { ...ok, primary_color: '#ffff00' },
+      { ...ok, primary_color: 'red' },
+      { ...ok, logo_url: 'javascript:alert(1)' },
+      { ...ok, logo_url: 'http://insecure.example.test/x.png' },
+      { ...ok, display_name: 'x' },
+    ]) {
       expect((await platform.req('PUT', `/platform/schools/${A.schoolId}/branding`, bad)).status).toBe(400);
     }
     const low = await platform.req('PUT', `/platform/schools/${A.schoolId}/branding`, { ...ok, accent_color: '#ffff00' });
@@ -115,7 +128,13 @@ describe('platform (Petra) administration is separate from school administration
 
     const pub = await new Client(h.app).get(`/public/branding/${A.code}`);
     expect(pub.status).toBe(200);
-    expect(pub.body).toEqual({ slug: A.code, display_name: 'Greenfield Updated 2', logo_url: 'https://cdn.example.test/logo.png', primary_color: '#0b6b4f', accent_color: '#08523c' });
+    expect(pub.body).toEqual({
+      slug: A.code,
+      display_name: 'Greenfield Updated 2',
+      logo_url: 'https://cdn.example.test/logo.png',
+      primary_color: '#0b6b4f',
+      accent_color: '#08523c',
+    });
     expect((await new Client(h.app).get('/public/branding/no-such-school')).status).toBe(404);
     // A school admin of A can only ever change A: another school's branding is untouched.
     const B = await seed(h, 'pl-b');
@@ -128,7 +147,10 @@ describe('platform (Petra) administration is separate from school administration
     const ok = await new Client(h.app).get(`/public/app-config/${A.code}?version=1.3.0`);
     expect(ok.body).toMatchObject({ latest_version: '1.4.0', min_supported_version: '1.2.0', update_required: false });
     expect((await new Client(h.app).get(`/public/app-config/${A.code}?version=1.1.9`)).body.update_required).toBe(true);
-    const bp = await platform.req('PUT', `/platform/schools/${A.schoolId}/build-profiles/android`, { app_id: 'com.petra.shikkhaos.greenfield', app_name: 'Greenfield' });
+    const bp = await platform.req('PUT', `/platform/schools/${A.schoolId}/build-profiles/android`, {
+      app_id: 'com.petra.shikkhaos.greenfield',
+      app_name: 'Greenfield',
+    });
     expect(bp.status).toBe(200);
     expect((await platform.req('PUT', `/platform/schools/${A.schoolId}/build-profiles/android`, { app_id: 'Bad App Id', app_name: 'G' })).status).toBe(400);
   });
@@ -142,8 +164,12 @@ describe('platform (Petra) administration is separate from school administration
     expect(JSON.stringify((await admin.get('/school/members')).body)).not.toMatch(/password|argon2/i);
     const audit = await h.owner.query(`SELECT metadata::text AS m FROM audit_events WHERE school_id = $1`, [A.schoolId]);
     expect(audit.rows.some((x) => x.m.includes(pw))).toBe(false);
-    expect((await admin.post('/school/members', { email: 'newteacher@pl.example.test', full_name: 'Dup', initial_password: pw, role: 'teacher' })).status).toBe(409);
-    expect((await admin.post('/school/members', { email: 'weak@pl.example.test', full_name: 'W', initial_password: 'short', role: 'teacher' })).status).toBe(400);
+    expect((await admin.post('/school/members', { email: 'newteacher@pl.example.test', full_name: 'Dup', initial_password: pw, role: 'teacher' })).status).toBe(
+      409,
+    );
+    expect((await admin.post('/school/members', { email: 'weak@pl.example.test', full_name: 'W', initial_password: 'short', role: 'teacher' })).status).toBe(
+      400,
+    );
   });
 
   it('school profile edits are validated; exam creation and grading policy validation still hold', async () => {

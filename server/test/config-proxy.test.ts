@@ -23,7 +23,13 @@ describe('config validation', () => {
 });
 
 describe('rate limiting and client IPs behind a proxy', () => {
-  const spoofed = (h: { app: any }, i: number) => new Client(h.app).req('POST', '/auth/login', { school: 'nowhere', email: 'a@nowhere.example.test', password: 'whatever-123' }, { 'x-forwarded-for': `203.0.113.${i}` });
+  const spoofed = (h: { app: any }, i: number) =>
+    new Client(h.app).req(
+      'POST',
+      '/auth/login',
+      { school: 'nowhere', email: 'a@nowhere.example.test', password: 'whatever-123' },
+      { 'x-forwarded-for': `203.0.113.${i}` },
+    );
 
   it('without TRUST_PROXY a forged X-Forwarded-For cannot evade the login rate limit', async () => {
     const h = await harness({ LOGIN_RATE_LIMIT_PER_MINUTE: '3' });

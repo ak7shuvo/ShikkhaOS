@@ -39,6 +39,14 @@ export function ErrorBanner({ error, onRetry }: { error: unknown; onRetry?: () =
   );
 }
 
+export function Warning({ children }: { children: ReactNode }) {
+  return (
+    <div className="banner banner-warn" role="status">
+      {children}
+    </div>
+  );
+}
+
 export function Notice({ children }: { children: ReactNode }) {
   return (
     <div className="banner banner-ok" role="status">

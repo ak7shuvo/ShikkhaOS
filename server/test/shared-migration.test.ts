@@ -41,15 +41,27 @@ async function phase1School(prefix: string): Promise<{ S: SeededSchool; sheetId:
   for (const a of ['start-review', 'approve', 'publish']) expect((await ctrl.post(`/result-sheets/${sheetId}/${a}`)).status).toBe(200);
   expect((await ctrl.post(`/result-sheets/${sheetId}/correction`, { reason: 'Re-check after audit' })).status).toBe(200);
   // A Phase 1 platform administrator who acted inside this school (audit actor), as Phase 1 allowed.
-  const pa = (await h.owner.query(`INSERT INTO users (email, password_hash, full_name, is_platform_admin) VALUES ($1,'x','Old Root',true) RETURNING id`, [`oldroot-${S.code}@petra.example.test`])).rows[0].id;
-  await h.owner.query(`INSERT INTO audit_events (school_id, actor_user_id, action, entity_type) VALUES ($1,$2,'platform.school.create','school')`, [S.schoolId, pa]);
+  const pa = (
+    await h.owner.query(`INSERT INTO users (email, password_hash, full_name, is_platform_admin) VALUES ($1,'x','Old Root',true) RETURNING id`, [
+      `oldroot-${S.code}@petra.example.test`,
+    ])
+  ).rows[0].id;
+  await h.owner.query(`INSERT INTO audit_events (school_id, actor_user_id, action, entity_type) VALUES ($1,$2,'platform.school.create','school')`, [
+    S.schoolId,
+    pa,
+  ]);
   return { S, sheetId };
 }
 
 describe('shared → dedicated migration', () => {
   it('copies everything faithfully, verifies it, cuts over, and keeps the shared copy untouched', async () => {
     const { S, sheetId } = await phase1School('mig1');
-    const before = (await h.owner.query(`SELECT (SELECT count(*) FROM students WHERE school_id=$1)::int AS students, (SELECT count(*) FROM published_results WHERE school_id=$1)::int AS pub`, [S.schoolId])).rows[0];
+    const before = (
+      await h.owner.query(
+        `SELECT (SELECT count(*) FROM students WHERE school_id=$1)::int AS students, (SELECT count(*) FROM published_results WHERE school_id=$1)::int AS pub`,
+        [S.schoolId],
+      )
+    ).rows[0];
 
     const report = await migrateSharedToDedicated(deps, S.schoolId);
     expect(report.tables.every((t) => t.match)).toBe(true);
@@ -58,7 +70,14 @@ describe('shared → dedicated migration', () => {
     expect((await f.control.query(`SELECT migrated_from_shared_at FROM schools WHERE id = $1`, [S.schoolId])).rows[0].migrated_from_shared_at).not.toBeNull();
 
     // Shared copy is untouched (rollback source).
-    expect((await h.owner.query(`SELECT (SELECT count(*) FROM students WHERE school_id=$1)::int AS students, (SELECT count(*) FROM published_results WHERE school_id=$1)::int AS pub`, [S.schoolId])).rows[0]).toEqual(before);
+    expect(
+      (
+        await h.owner.query(
+          `SELECT (SELECT count(*) FROM students WHERE school_id=$1)::int AS students, (SELECT count(*) FROM published_results WHERE school_id=$1)::int AS pub`,
+          [S.schoolId],
+        )
+      ).rows[0],
+    ).toEqual(before);
 
     // Same credentials still work; the app now talks to the dedicated database.
     const guardian = await loginAs(h, S.users.guardian.email);
@@ -76,7 +95,10 @@ describe('shared → dedicated migration', () => {
   it('Phase 1 platform admins do not carry credentials into the school database; referenced actors become disabled stubs', async () => {
     const { S } = await phase1School('mig2');
     await migrateSharedToDedicated(deps, S.schoolId);
-    const users = await dedicated<{ email: string; status: string; password_hash: string; is_platform_admin: boolean }>(S.schoolId, `SELECT email::text AS email, status, password_hash, is_platform_admin FROM users`);
+    const users = await dedicated<{ email: string; status: string; password_hash: string; is_platform_admin: boolean }>(
+      S.schoolId,
+      `SELECT email::text AS email, status, password_hash, is_platform_admin FROM users`,
+    );
     const stub = users.find((u) => u.email.startsWith('oldroot-'))!;
     expect(stub).toMatchObject({ status: 'disabled', password_hash: '!', is_platform_admin: false });
     expect(users.every((u) => !u.is_platform_admin)).toBe(true);
@@ -102,10 +124,17 @@ describe('shared → dedicated migration', () => {
 
   it('a failure mid-copy leaves the school shared and serving; a retry succeeds', async () => {
     const { S } = await phase1School('mig5');
-    const failing = { ...deps, afterTable: (t: string) => { if (t === 'marks') throw new Error('simulated failure during copy'); } };
+    const failing = {
+      ...deps,
+      afterTable: (t: string) => {
+        if (t === 'marks') throw new Error('simulated failure during copy');
+      },
+    };
     await expect(migrateSharedToDedicated(failing, S.schoolId)).rejects.toThrow(/simulated failure/);
     expect(await mode(S.schoolId)).toEqual({ db_mode: 'shared', status: 'active' });
-    expect((await f.control.query(`SELECT provisioning_error FROM schools WHERE id = $1`, [S.schoolId])).rows[0].provisioning_error).toMatch(/migration failed/);
+    expect((await f.control.query(`SELECT provisioning_error FROM schools WHERE id = $1`, [S.schoolId])).rows[0].provisioning_error).toMatch(
+      /migration failed/,
+    );
     // still works on the shared database
     expect((await (await loginAs(h, S.users.admin.email)).get('/classes')).status).toBe(200);
     // the transaction rolled back the partial copy
@@ -117,7 +146,12 @@ describe('shared → dedicated migration', () => {
 
   it('refuses a non-empty target unless the operator explicitly resets it', async () => {
     const { S } = await phase1School('mig5b');
-    const failing = { ...deps, afterTable: () => { throw new Error('stop after provisioning'); } };
+    const failing = {
+      ...deps,
+      afterTable: () => {
+        throw new Error('stop after provisioning');
+      },
+    };
     await expect(migrateSharedToDedicated(failing, S.schoolId)).rejects.toThrow();
     await dedicated(S.schoolId, `INSERT INTO schools (id, code, name) VALUES ($1,'leftover','Leftover')`, [S.schoolId]);
     await expect(migrateSharedToDedicated(deps, S.schoolId)).rejects.toThrow(/not empty/);
@@ -129,7 +163,12 @@ describe('shared → dedicated migration', () => {
 
   it('verification catches corrupted copies and never cuts over', async () => {
     const { S } = await phase1School('mig6');
-    const corrupting = { ...deps, beforeVerify: async (c: pg.Client) => { await c.query(`UPDATE marks SET obtained = obtained + 1 WHERE obtained IS NOT NULL`); } };
+    const corrupting = {
+      ...deps,
+      beforeVerify: async (c: pg.Client) => {
+        await c.query(`UPDATE marks SET obtained = obtained + 1 WHERE obtained IS NOT NULL`);
+      },
+    };
     await expect(migrateSharedToDedicated(corrupting, S.schoolId)).rejects.toThrow(/verification failed: marks/);
     expect(await mode(S.schoolId)).toEqual({ db_mode: 'shared', status: 'active' });
   });
@@ -139,12 +178,15 @@ describe('shared → dedicated migration', () => {
     const admin = await loginAs(h, S.users.admin.email);
     let during = 0;
     let loginDuring = 0;
-    const probing = { ...deps, afterTable: async (t: string) => {
-      if (t === 'schools') {
-        during = (await admin.get('/classes')).status;
-        loginDuring = (await new Client(h.app).login(S.users.admin.email)).status;
-      }
-    } };
+    const probing = {
+      ...deps,
+      afterTable: async (t: string) => {
+        if (t === 'schools') {
+          during = (await admin.get('/classes')).status;
+          loginDuring = (await new Client(h.app).login(S.users.admin.email)).status;
+        }
+      },
+    };
     await migrateSharedToDedicated(probing, S.schoolId);
     expect(during).toBe(503);
     expect(loginDuring).toBe(503);

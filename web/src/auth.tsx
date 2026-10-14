@@ -4,9 +4,8 @@ import { api, ApiError, type Session } from './api';
 interface AuthState {
   session: Session | null;
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (school: string, email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
-  switchSchool: (schoolId: string) => Promise<void>;
   can: (permission: string) => boolean;
 }
 const Ctx = createContext<AuthState | null>(null);
@@ -25,7 +24,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .finally(() => setLoading(false));
   }, []);
 
-  const login = useCallback(async (email: string, password: string) => setSession(await api.post<Session>('/auth/login', { email, password })), []);
+  const login = useCallback(
+    async (school: string, email: string, password: string) => setSession(await api.post<Session>('/auth/login', { school, email, password })),
+    [],
+  );
   const logout = useCallback(async () => {
     try {
       await api.post('/auth/logout');
@@ -33,10 +35,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(null);
     }
   }, []);
-  const switchSchool = useCallback(async (school_id: string) => setSession(await api.post<Session>('/auth/switch-school', { school_id })), []);
   const can = useCallback((p: string) => Boolean(session?.permissions.includes(p)), [session]);
 
-  return <Ctx.Provider value={{ session, loading, login, logout, switchSchool, can }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ session, loading, login, logout, can }}>{children}</Ctx.Provider>;
 }
 
 export function useAuth(): AuthState {

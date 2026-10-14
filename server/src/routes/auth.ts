@@ -24,7 +24,9 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     });
 
   const sessionInfo = async (a: ReturnType<typeof authOf>) => {
-    const b = (await control.query(`SELECT display_name, logo_url, primary_color, accent_color FROM school_branding WHERE school_id = $1`, [a.entry.id])).rows[0] ?? null;
+    const b =
+      (await control.query(`SELECT display_name, logo_url, primary_color, accent_color FROM school_branding WHERE school_id = $1`, [a.entry.id])).rows[0] ??
+      null;
     return {
       user: { id: a.userId, email: a.email, full_name: a.fullName, language: a.language },
       school: { id: a.entry.id, slug: a.entry.slug, name: a.entry.name },
@@ -32,7 +34,14 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       roles: a.roles,
       permissions: [...a.permissions].sort(),
       memberships: a.memberships,
-      entitlement: { level: a.entitlement.level, status: a.entitlement.status, warning: a.entitlement.warning, full_access_until: a.entitlement.full_access_until, read_only_until: a.entitlement.read_only_until, retention_until: a.entitlement.retention_until },
+      entitlement: {
+        level: a.entitlement.level,
+        status: a.entitlement.status,
+        warning: a.entitlement.warning,
+        full_access_until: a.entitlement.full_access_until,
+        read_only_until: a.entitlement.read_only_until,
+        retention_until: a.entitlement.retention_until,
+      },
       branding: b,
     };
   };
@@ -79,7 +88,10 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const token = newSessionToken();
     const member = await withContext(pool, { userId: found.id, schoolId: entry.id }, async (tx) => {
       // In legacy shared mode the same email may exist for several schools: require an active membership in THIS school.
-      const ms = await tx.query(`SELECT 1 FROM school_memberships m JOIN schools s ON s.id = m.school_id WHERE m.user_id = $1 AND m.school_id = $2 AND m.status = 'active' AND s.status = 'active'`, [found.id, entry.id]);
+      const ms = await tx.query(
+        `SELECT 1 FROM school_memberships m JOIN schools s ON s.id = m.school_id WHERE m.user_id = $1 AND m.school_id = $2 AND m.status = 'active' AND s.status = 'active'`,
+        [found.id, entry.id],
+      );
       if (!ms.rows[0]) return false;
       await tx.query(`UPDATE users SET failed_login_count = 0, locked_until = NULL, last_login_at = now() WHERE id = $1`, [found.id]);
       await tx.query(
@@ -88,7 +100,10 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         [hashToken(token), found.id, entry.id, config.SESSION_TTL_HOURS, (req.headers['user-agent'] ?? '').slice(0, 200)],
       );
       // Bound concurrent sessions: drop the oldest beyond the cap.
-      await tx.query(`DELETE FROM sessions WHERE id IN (SELECT id FROM sessions WHERE user_id = $1 ORDER BY created_at DESC OFFSET $2)`, [found.id, config.MAX_SESSIONS_PER_USER]);
+      await tx.query(`DELETE FROM sessions WHERE id IN (SELECT id FROM sessions WHERE user_id = $1 ORDER BY created_at DESC OFFSET $2)`, [
+        found.id,
+        config.MAX_SESSIONS_PER_USER,
+      ]);
       return true;
     });
     if (!member) throw fail();
@@ -133,7 +148,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const a = authOf(req);
     const b = parse(z.object({ current_password: z.string().min(1).max(256), new_password: z.string().min(PASSWORD_MIN_LENGTH).max(256) }), req.body);
     const stored = (await a.pool.query(`SELECT * FROM auth_user_by_email($1)`, [a.email])).rows[0];
-    if (!stored || !(await verifyPassword(stored.password_hash, b.current_password))) throw new AppError(403, 'WRONG_PASSWORD', 'Current password is incorrect');
+    if (!stored || !(await verifyPassword(stored.password_hash, b.current_password)))
+      throw new AppError(403, 'WRONG_PASSWORD', 'Current password is incorrect');
     const h = await hashPassword(b.new_password);
     await withContext(a.pool, { userId: a.userId, schoolId: a.entry.id }, async (tx) => {
       await tx.query(`UPDATE users SET password_hash = $2 WHERE id = $1`, [a.userId, h]);

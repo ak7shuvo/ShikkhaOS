@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { SecretBox, SecretError, generateMasterKey, loadMasterKeys } from '../src/secrets.js';
 
 const box = (id = 'k1', key = generateMasterKey(), prev?: { id: string; key: string }) =>
-  new SecretBox(loadMasterKeys({ PETRA_MASTER_KEY: key, PETRA_MASTER_KEY_ID: id, PETRA_MASTER_KEY_PREVIOUS: prev?.key, PETRA_MASTER_KEY_PREVIOUS_ID: prev?.id }));
+  new SecretBox(
+    loadMasterKeys({ PETRA_MASTER_KEY: key, PETRA_MASTER_KEY_ID: id, PETRA_MASTER_KEY_PREVIOUS: prev?.key, PETRA_MASTER_KEY_PREVIOUS_ID: prev?.id }),
+  );
 
 describe('SecretBox', () => {
   it('round-trips and never contains the plaintext', () => {
@@ -46,6 +48,8 @@ describe('SecretBox', () => {
   it('validates key material', () => {
     expect(() => loadMasterKeys({ PETRA_MASTER_KEY: 'short', PETRA_MASTER_KEY_ID: 'k1' })).toThrow(/32 bytes/);
     const k = generateMasterKey();
-    expect(() => loadMasterKeys({ PETRA_MASTER_KEY: k, PETRA_MASTER_KEY_ID: 'k1', PETRA_MASTER_KEY_PREVIOUS: k, PETRA_MASTER_KEY_PREVIOUS_ID: 'k1' })).toThrow(/differ/);
+    expect(() => loadMasterKeys({ PETRA_MASTER_KEY: k, PETRA_MASTER_KEY_ID: 'k1', PETRA_MASTER_KEY_PREVIOUS: k, PETRA_MASTER_KEY_PREVIOUS_ID: 'k1' })).toThrow(
+      /differ/,
+    );
   });
 });

@@ -36,9 +36,24 @@ export async function publicRoutes(app: FastifyInstance): Promise<void> {
   // Lets branded clients learn whether the installed app version is still supported.
   app.get('/public/app-config/:slug', limit, async (req) => {
     const { slug } = parse(z.object({ slug: z.string().regex(SLUG_RE) }), req.params);
-    const { version } = parse(z.object({ version: z.string().regex(/^\d+\.\d+\.\d+$/).optional() }), req.query);
+    const { version } = parse(
+      z.object({
+        version: z
+          .string()
+          .regex(/^\d+\.\d+\.\d+$/)
+          .optional(),
+      }),
+      req.query,
+    );
     const branding = await find(slug);
-    const rel = (await control.query(`SELECT version, min_supported_version FROM app_releases WHERE channel = 'stable' ORDER BY created_at DESC LIMIT 1`)).rows[0] ?? null;
-    return { branding, latest_version: rel?.version ?? null, min_supported_version: rel?.min_supported_version ?? null, update_required: Boolean(version && rel && cmp(version, rel.min_supported_version) < 0) };
+    const rel =
+      (await control.query(`SELECT version, min_supported_version FROM app_releases WHERE channel = 'stable' ORDER BY created_at DESC LIMIT 1`)).rows[0] ??
+      null;
+    return {
+      branding,
+      latest_version: rel?.version ?? null,
+      min_supported_version: rel?.min_supported_version ?? null,
+      update_required: Boolean(version && rel && cmp(version, rel.min_supported_version) < 0),
+    };
   });
 }

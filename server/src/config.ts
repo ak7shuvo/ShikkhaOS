@@ -12,19 +12,33 @@ const schema = z.object({
   SHARED_DATABASE_URL: z.string().url().optional(),
   // Encryption of per-school DB credentials stored in the registry (AES-256-GCM). base64 of 32 random bytes.
   PETRA_MASTER_KEY: z.string().min(1),
-  PETRA_MASTER_KEY_ID: z.string().regex(/^[a-z0-9_-]{1,20}$/).default('k1'),
+  PETRA_MASTER_KEY_ID: z
+    .string()
+    .regex(/^[a-z0-9_-]{1,20}$/)
+    .default('k1'),
   PETRA_MASTER_KEY_PREVIOUS: z.string().optional(),
-  PETRA_MASTER_KEY_PREVIOUS_ID: z.string().regex(/^[a-z0-9_-]{1,20}$/).optional(),
+  PETRA_MASTER_KEY_PREVIOUS_ID: z
+    .string()
+    .regex(/^[a-z0-9_-]{1,20}$/)
+    .optional(),
   // '' = do not trust X-Forwarded-*; a number = trusted proxy hop count; otherwise comma-separated proxy IPs/CIDRs.
   TRUST_PROXY: z.string().default(''),
-  SESSION_IDLE_MINUTES: z.coerce.number().int().min(5).max(24 * 60).default(120),
+  SESSION_IDLE_MINUTES: z.coerce
+    .number()
+    .int()
+    .min(5)
+    .max(24 * 60)
+    .default(120),
   MAX_SESSIONS_PER_USER: z.coerce.number().int().min(1).max(50).default(5),
   ENTITLEMENT_CACHE_SECONDS: z.coerce.number().int().min(0).max(300).default(10),
   MAX_SCHOOL_POOLS: z.coerce.number().int().min(1).max(200).default(25),
   SCHOOL_POOL_MAX: z.coerce.number().int().min(1).max(50).default(5),
   BILLING_TIMEZONE: z.string().default('Asia/Dhaka'),
   // true = TLS to school databases (certificate verification follows Node defaults). Off by default for local development only.
-  SCHOOL_DB_SSL: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+  SCHOOL_DB_SSL: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
   TRIAL_DAYS: z.coerce.number().int().min(0).max(365).default(30),
   ALLOWED_ORIGINS: z
     .string()
@@ -55,7 +69,10 @@ export function parseTrustProxy(v: string): boolean | number | string[] {
   const t = v.trim();
   if (t === '') return false;
   if (/^\d+$/.test(t)) return Number(t);
-  return t.split(',').map((x) => x.trim()).filter(Boolean);
+  return t
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean);
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
