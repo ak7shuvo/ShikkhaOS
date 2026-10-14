@@ -1,10 +1,11 @@
 import { setupRole } from '../migrate.js';
 
-const url = process.env.MIGRATION_DATABASE_URL;
+// Legacy shared-database role (Phase 1 layout). Only needed while any school is db_mode='shared'.
+const url = process.env.PROVISIONER_DATABASE_URL ?? process.env.MIGRATION_DATABASE_URL;
 const pw = process.env.APP_DB_PASSWORD;
 if (!url || !pw) {
-  console.error('MIGRATION_DATABASE_URL and APP_DB_PASSWORD are required (see .env.example).');
+  console.error('PROVISIONER_DATABASE_URL (or MIGRATION_DATABASE_URL) and APP_DB_PASSWORD are required (see .env.example).');
   process.exit(1);
 }
-await setupRole(url, pw);
-console.log('Role shikkha_app is ready. Make sure DATABASE_URL uses it with the same password.');
+await setupRole(url, 'shikkha_app', pw);
+console.log('Role shikkha_app is ready (shared/legacy database).');
