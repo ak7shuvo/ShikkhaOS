@@ -1,5 +1,7 @@
 # Database
 
+> **Phase 2 update:** this document describes the school schema (`server/migrations`), which is now applied **per school database** (see [DATABASE_ISOLATION.md](DATABASE_ISOLATION.md) and [SCHOOL_PROVISIONING.md](SCHOOL_PROVISIONING.md)); platform data (registry, subscriptions, platform admins) lives in a separate control-plane schema (`server/control-migrations`, described in [PHASE2_ARCHITECTURE.md](PHASE2_ARCHITECTURE.md#3-control-plane)). Migration `002_session_idle.sql` adds `last_seen_at` to `auth_session_by_hash()`. The roles table below refers to the legacy shared setup (`shikkha_app`); dedicated schools use `sk_<id>_app`. `school_licenses` and `users.is_platform_admin` are legacy and unused in dedicated databases.
+
 PostgreSQL ≥ 14 (tested on 16). Schema in `server/migrations/001_init.sql`; applied by `npm run db:migrate` (tracks applied files in `schema_migrations`, advisory-locked, each file in one transaction).
 
 ## Roles

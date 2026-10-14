@@ -1,6 +1,6 @@
 # Implementation plan and roadmap
 
-## Phase 1 — foundation (this repository state)
+## Phase 1 — foundation (commit `ca0a19a`)
 
 | Area                                                                 | Status                   |
 | -------------------------------------------------------------------- | ------------------------ |
@@ -17,16 +17,35 @@
 | Browser E2E tests of all UI flows                                    | **Not done**             |
 | CI pipeline, deployment automation                                   | **Not done**             |
 
-## Deferred to Phase 2 (not implemented)
+## Phase 2 — Petra commercial multi-school architecture (branch `feat/phase-2-db-per-school`)
 
-1. Account lifecycle: change/reset password, email verification, MFA, session list/revoke.
-2. Idempotency-key table for retried writes; shared-store rate limiting; `trustProxy` configuration.
+| Area                                                                                                                | Status                                                                |
+| ------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Audit of Phase 1 and migration plan                                                                                 | Done ([PHASE2_ARCHITECTURE.md](PHASE2_ARCHITECTURE.md))               |
+| Control plane (registry, branding, subscriptions, platform admins, releases, build profiles, platform audit)        | Done (schema, API, minimal console UI)                                |
+| Database-per-school with per-school roles; registry-routed `TenantRouter`                                           | Done, tested on real roles/databases                                  |
+| Idempotent provisioning, crash recovery, per-school migrate/health, credential rotation                             | Done, tested                                                          |
+| Encrypted credentials (AES-256-GCM, env master key), rotation procedures                                            | Done (no KMS)                                                         |
+| Subscription lifecycle: monthly/annual, trial/grace/read-only/blocked, exact boundaries, manual payments, retention | Done, tested (no payment gateway)                                     |
+| Data export, backup/restore/verify, offboarding with guards                                                         | Done as operator procedures, tested locally; no scheduling/encryption |
+| Shared→dedicated migration with verification and rollback; shared mode retained only for that                       | Done, tested                                                          |
+| Session idle timeout/cap, change-password, trusted-proxy handling                                                   | Done (proxy verified with simulated headers only)                     |
+| Branding configuration; per-school build profile generator                                                          | Done (configuration only)                                             |
+| EXE / Linux package / Android APK builds                                                                            | **Not done** — no wrapper projects, builds, signing or launch tests   |
+| TLS, `pg_hba`/firewall, KMS, MFA for platform admins, shared rate-limit store, monitoring, CI, backups scheduling   | **Not done** — production blockers                                    |
+
+## Deferred (not implemented)
+
+1. Account lifecycle for school users: password reset, e-mail verification, MFA; platform-admin MFA and password management.
+2. Idempotency-key table for retried writes; shared-store rate limiting; verified reverse-proxy deployment.
 3. Student portal (activate the reserved role), report cards/PDF, class-wide result summaries, GPA aggregation across subjects.
-4. Licence enforcement beyond status/date (`max_students`), billing — payments are out of scope.
+4. Payment gateway, invoices, reminders, self-service renewal, per-plan limits.
 5. Logo upload/storage (currently an `https://` URL).
-6. Audit-log viewer with filters; data export/erasure tooling.
+6. Audit-log viewer with filters; data erasure tooling beyond the offboarding procedure.
 7. Attendance, timetable, fees, notifications.
-8. Per-school custom roles (permissions are fixed per role today).
+8. Per-school custom roles.
+9. Token-based sessions for native clients, Capacitor/Tauri projects, signed builds, offline marks entry with synchronisation (design in [ARCHITECTURE.md](ARCHITECTURE.md#designed-for-later-phases--not-implemented)).
+10. Removal of shared mode (criteria in [DATABASE_ISOLATION.md](DATABASE_ISOLATION.md#removing-shared-mode)).
 
 ## Roadmap for clients and offline
 

@@ -1,5 +1,7 @@
 # Architecture
 
+> **Phase 2 update:** the single shared database, global accounts, `switch-school` and the in-database platform scope described in the Phase 1 sections below were replaced on branch `feat/phase-2-db-per-school` by a control plane + database-per-school model. Read [PHASE2_ARCHITECTURE.md](PHASE2_ARCHITECTURE.md) first; sections here that mention `DATABASE_URL`, shared-database RLS as the only tenant boundary, school switching, or `school_licenses` describe the Phase 1 design (still present only as the legacy `shared` mode). Frontend, result workflow, grading and the offline design notes remain accurate.
+
 ## Stack (what actually exists)
 
 | Layer     | Choice                                               | Why / trade-off                                                                                                                                   |
