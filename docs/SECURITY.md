@@ -75,7 +75,7 @@ Runtime: `fastify`, `@fastify/cookie`, `@fastify/helmet`, `@fastify/rate-limit`,
 
 Do not treat local test results as production readiness. Open items:
 
-1. **TLS** to PostgreSQL not verified; control-plane connections have no TLS option yet. **Network restriction** (`pg_hba`, firewall, private listen address, `REVOKE CONNECT` on maintenance databases) is documented only.
+1. **TLS** to PostgreSQL is not verified: school pools use `ssl: true` when `SCHOOL_DB_SSL=true` and control/shared pools only honour `?sslmode=` in their URL (see PHASE2_ARCHITECTURE.md); all fail closed against a self-signed certificate, no trusted-CA success path was tested, and the default is plaintext. **Network restriction** (`pg_hba`, firewall, private listen address, `REVOKE CONNECT` on maintenance databases) is documented only.
 2. **Master key** is an environment variable: no KMS/HSM, no automated recovery. Any reader of the API process environment can decrypt all school credentials. The control-plane role can read/update registry rows (including encrypted credentials).
 3. **Platform admins** have no MFA, password reset or change flow, and no IP allow-list; a compromised platform admin can suspend/activate schools and rewrite branding and subscription data.
 4. **Trusted proxy** logic is verified only with simulated headers; **rate limiting** is per-process memory (not shared across instances); no CAPTCHA/IP reputation.

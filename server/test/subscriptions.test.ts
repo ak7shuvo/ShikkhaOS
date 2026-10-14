@@ -264,3 +264,109 @@ describe('subscription lifecycle through the platform API', () => {
     expect(ev.rows.map((e) => e.event)).toEqual(expect.arrayContaining(['trial_started', 'status_derived', 'payment_recorded']));
   });
 });
+
+describe('write paths in restricted subscription states (documented exceptions only)', () => {
+  const Z = '00000000-0000-4000-8000-000000000000';
+  // Every state-changing school route except the documented session/credential exceptions.
+  const WRITES: [string, string, unknown][] = [
+    ['PATCH', '/auth/me', { language: 'en' }],
+    ['POST', '/academic-years', { name: 'x', starts_on: '2026-01-01', ends_on: '2026-12-31' }],
+    ['POST', '/classes', { name: 'x' }],
+    ['POST', `/classes/${Z}/sections`, { name: 'x' }],
+    ['POST', '/subjects', { code: 'X', name: 'x' }],
+    ['POST', '/students', { student_code: 'X', full_name: 'x' }],
+    ['POST', `/students/${Z}/enrollments`, {}],
+    ['POST', '/guardians', { full_name: 'x' }],
+    ['POST', `/students/${Z}/guardians`, {}],
+    ['POST', `/student-guardians/${Z}/verify`, {}],
+    ['POST', `/student-guardians/${Z}/revoke`, {}],
+    ['POST', '/teacher-assignments', {}],
+    ['POST', '/exams', {}],
+    ['POST', '/result-sheets', {}],
+    ['PUT', `/result-sheets/${Z}/marks`, {}],
+    ['POST', `/result-sheets/${Z}/submit`, {}],
+    ['POST', `/result-sheets/${Z}/publish`, {}],
+    ['PUT', '/school/branding', {}],
+    ['PATCH', '/school', {}],
+    ['POST', '/school/members', {}],
+    ['PATCH', `/school/members/${Z}`, {}],
+    ['POST', '/school/grading-policies', {}],
+  ];
+  const sweep = async (c: Client) => {
+    const seen = new Set<string>();
+    for (const [m, u, b] of WRITES) seen.add(`${(await c.req(m as 'POST', u, b)).body?.error?.code}`);
+    return [...seen];
+  };
+
+  it('every school write route is rejected in read-only and blocked states, for staff and guardians alike', async () => {
+    const { S, admin } = await school('wr-sweep');
+    const ctrl = await loginAs(h, S.users.controller.email);
+    const guardian = await loginAs(h, S.users.guardian.email);
+    h.setToday(day(10));
+    for (const c of [admin, ctrl, guardian]) expect(await sweep(c)).toEqual(['SUBSCRIPTION_READ_ONLY']);
+    h.setToday(day(60));
+    for (const c of [admin, ctrl, guardian]) expect(await sweep(c)).toEqual(['SUBSCRIPTION_BLOCKED']);
+  });
+
+  it('PATCH /auth/me works in full and grace, is refused in read-only and blocked, and changes nothing when refused', async () => {
+    const { S, admin } = await school('wr-lang');
+    const lang = async () => (await h.owner.query(`SELECT preferred_language FROM users WHERE id = $1`, [S.users.admin.id])).rows[0].preferred_language;
+    h.setToday(day(3)); // grace
+    expect((await admin.patch('/auth/me', { language: 'en' })).status).toBe(200);
+    expect(await lang()).toBe('en');
+    h.setToday(day(10));
+    const ro = await admin.patch('/auth/me', { language: 'bn' });
+    expect([ro.status, ro.body.error.code]).toEqual([403, 'SUBSCRIPTION_READ_ONLY']);
+    h.setToday(day(60));
+    const bl = await admin.patch('/auth/me', { language: 'bn' });
+    expect([bl.status, bl.body.error.code]).toEqual([403, 'SUBSCRIPTION_BLOCKED']);
+    expect(await lang()).toBe('en');
+  });
+
+  it('change-password stays available in read-only and blocked states without weakening password rules', async () => {
+    const { S, admin } = await school('wr-pw');
+    const other = await loginAs(h, S.users.admin.email);
+    for (const [label, offset] of [
+      ['read-only', 10],
+      ['blocked', 60],
+    ] as const) {
+      h.setToday(day(offset));
+      const bad = await admin.post('/auth/change-password', { current_password: 'not-the-password', new_password: 'a-long-enough-password-1' });
+      expect([label, bad.status, bad.body.error.code]).toEqual([label, 403, 'WRONG_PASSWORD']);
+      const weak = await admin.post('/auth/change-password', { current_password: PASSWORD, new_password: 'short' });
+      expect([label, weak.status, weak.body.error.code]).toEqual([label, 400, 'VALIDATION_ERROR']);
+    }
+    h.setToday(day(10));
+    expect((await admin.post('/auth/change-password', { current_password: PASSWORD, new_password: 'a-long-enough-password-1' })).status).toBe(200);
+    expect((await other.get('/auth/me')).status).toBe(401); // other sessions revoked
+    h.setToday(day(60));
+    expect((await admin.post('/auth/change-password', { current_password: 'a-long-enough-password-1', new_password: 'another-long-password-2' })).status).toBe(
+      200,
+    );
+    // the new credential is what works at login (blocked state is reported only after the password verified)
+    const r = await new Client(h.app).login(S.users.admin.email, 'another-long-password-2');
+    expect([r.status, r.body.error.code]).toEqual([403, 'SUBSCRIPTION_BLOCKED']);
+    expect((await new Client(h.app).login(S.users.admin.email, PASSWORD)).status).toBe(401);
+  });
+
+  it('export is a GET allowed in read-only mode and appends exactly one audit record; blocked mode refuses and appends nothing', async () => {
+    const { S, admin } = await school('wr-exp');
+    const audits = async () =>
+      (await h.owner.query(`SELECT count(*)::int AS n FROM audit_events WHERE school_id = $1 AND action = 'school.export'`, [S.schoolId])).rows[0].n;
+    h.setToday(day(10));
+    const before = await audits();
+    expect((await admin.get('/school/export')).status).toBe(200);
+    expect(await audits()).toBe(before + 1);
+    h.setToday(day(60));
+    expect((await admin.get('/school/export')).status).toBe(403);
+    expect(await audits()).toBe(before + 1);
+  });
+
+  it('session bookkeeping still runs: logout works in restricted states', async () => {
+    const { admin } = await school('wr-out');
+    h.setToday(day(60));
+    expect((await admin.get('/auth/me')).status).toBe(200);
+    expect((await admin.post('/auth/logout')).status).toBe(200);
+    expect((await admin.get('/auth/me')).status).toBe(401);
+  });
+});

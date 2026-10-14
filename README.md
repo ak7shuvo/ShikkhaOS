@@ -72,7 +72,7 @@ npm test            # vitest: server (needs PostgreSQL + TEST_* env) and web
 npm run build       # server (tsc) + web (vite)
 ```
 
-Server tests run against a **real PostgreSQL** through the restricted role, so row-level-security policies are exercised rather than mocked. `TEST_DATABASE_URL` and `TEST_MIGRATION_DATABASE_URL` (see `.env.example`) must point at a disposable database.
+Server tests run against a **real PostgreSQL** through restricted roles, so row-level-security policies and per-school database privileges are exercised rather than mocked. The test setup is **destructive** (it drops/recreates schemas and per-school databases) and refuses to start unless it can prove the target is a disposable test cluster: `PETRA_TEST_CLUSTER=disposable`, a matching cluster-marker database, loopback host, strictly test-named databases (see `.env.example` for the one-time preparation). Never point `TEST_*` at a development, staging or production cluster.
 
 ## Test results
 

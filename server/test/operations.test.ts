@@ -7,7 +7,7 @@ import { writeBuildProfile } from '../src/build-profile.js';
 import { addDays } from '../src/entitlements.js';
 import { dropScratchDatabase, exportSchool, finalizeOffboarding, resetSchoolAccountPassword, restoreDump, startOffboarding } from '../src/operations.js';
 import { dbNameFor, provisionSchool, roleNameFor, urlForDb } from '../src/provisioning.js';
-import { controlFixture, registerNew, today, type ControlFixture } from './fixtures.js';
+import { controlFixture, registerNew, scratchDbName, today, type ControlFixture } from './fixtures.js';
 import { Client, harness, uniqueCode, type Harness } from './helpers.js';
 
 let h: Harness;
@@ -41,7 +41,7 @@ describe('backup, restore and export procedure', () => {
     expect(manifest.dump_sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(fs.statSync(manifestPath).mode & 0o077).toBe(0); // owner-only permissions
 
-    const scratch = `restore_${Date.now().toString(36)}`;
+    const scratch = await scratchDbName('x');
     const r = await restoreDump(f.deps, manifestPath, scratch);
     expect(r).toEqual({ ok: true, mismatches: [], placeholder_role_created: null });
     const c = new pg.Client({ connectionString: urlForDb(f.deps.adminUrl, scratch) });
@@ -59,7 +59,7 @@ describe('backup, restore and export procedure', () => {
     const { manifestPath, manifest } = await exportSchool(f.deps, A.id, tmp());
     const dump = path.join(path.dirname(manifestPath), manifest.dump_file);
     fs.appendFileSync(dump, 'x');
-    const scratch = `restore_t_${Date.now().toString(36)}`;
+    const scratch = await scratchDbName('t');
     await expect(restoreDump(f.deps, manifestPath, scratch)).rejects.toThrow(/checksum/);
     expect(await exists(scratch)).toBe(false);
   });
@@ -82,7 +82,7 @@ describe('backup, restore and export procedure', () => {
     await c.query(`DELETE FROM classes`);
     await c.end();
     expect((await A.admin.get('/classes')).body.items).toEqual([]);
-    const scratch = `restore_d_${Date.now().toString(36)}`;
+    const scratch = await scratchDbName('d');
     expect((await restoreDump(f.deps, manifestPath, scratch)).ok).toBe(true);
     const s = new pg.Client({ connectionString: urlForDb(f.deps.adminUrl, scratch) });
     await s.connect();
@@ -143,7 +143,7 @@ describe('offboarding and deletion safeguards', () => {
     expect((await f.control.query(`SELECT action FROM platform_audit_events WHERE school_id = $1 AND action = 'school.offboarded'`, [A.id])).rowCount).toBe(1);
 
     // The final export can still bring the data back.
-    const scratch = `restore_f_${Date.now().toString(36)}`;
+    const scratch = await scratchDbName('f');
     const restored = await restoreDump(f.deps, manifestPath, scratch);
     expect(restored).toMatchObject({ ok: true, placeholder_role_created: roleNameFor(A.id) }); // role was gone; a NOLOGIN placeholder keeps the restore faithful
     const c = new pg.Client({ connectionString: urlForDb(f.deps.adminUrl, scratch) });

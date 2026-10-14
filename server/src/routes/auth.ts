@@ -136,14 +136,16 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/auth/me', { preHandler: authz(app, { anySession: true }) }, async (req) => sessionInfo(authOf(req)));
 
-  app.patch('/auth/me', { preHandler: authz(app, { anySession: true }) }, async (req) => {
+  // A school write (preference), so it follows the subscription state like every other school write (403 in read-only/blocked).
+  app.patch('/auth/me', { preHandler: authz(app) }, async (req) => {
     const a = authOf(req);
     const body = parse(z.object({ language: z.enum(['bn', 'en']) }), req.body);
     await withContext(a.pool, { userId: a.userId }, (tx) => tx.query('UPDATE users SET preferred_language = $1 WHERE id = $2', [body.language, a.userId]));
     return { ok: true };
   });
 
-  // Allowed in every subscription state so users are never locked out of fixing their own credentials.
+  // Deliberate exception: allowed in every subscription state so a user can always replace a possibly compromised password
+  // (it also revokes their other sessions). It still verifies the current password and enforces the minimum length.
   app.post('/auth/change-password', { preHandler: authz(app, { anySession: true }) }, async (req) => {
     const a = authOf(req);
     const b = parse(z.object({ current_password: z.string().min(1).max(256), new_password: z.string().min(PASSWORD_MIN_LENGTH).max(256) }), req.body);

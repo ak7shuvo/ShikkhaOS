@@ -182,8 +182,21 @@ describe('platform (Petra) administration is separate from school administration
     const base = { name: 'Validation', academic_year_id: A.yearId, class_id: A.classId };
     expect((await ctrl.post('/exams', { ...base, subjects: [{ subject_id: A.subjectIds.math, max_marks: 0 }] })).status).toBe(400);
     expect((await ctrl.post('/exams', { ...base, subjects: [{ subject_id: A.subjectIds.math, max_marks: 10, pass_marks: 11 }] })).status).toBe(400);
+    // Phase 1 contract (ca0a19a): at least one subject, and no subject twice in the same exam.
+    expect((await ctrl.post('/exams', { ...base, subjects: [] })).status).toBe(400);
+    expect(
+      (
+        await ctrl.post('/exams', {
+          ...base,
+          subjects: [
+            { subject_id: A.subjectIds.math, max_marks: 10 },
+            { subject_id: A.subjectIds.math, max_marks: 10 },
+          ],
+        })
+      ).status,
+    ).toBe(400);
     expect((await ctrl.post('/exams', { ...base, subjects: [{ subject_id: A.subjectIds.math, max_marks: 10 }] })).status).toBe(201);
-    expect((await ctrl.post('/exams', { ...base, subjects: [{ subject_id: A.subjectIds.math, max_marks: 10 }] })).status).toBe(409);
+    expect((await ctrl.post('/exams', { ...base, subjects: [{ subject_id: A.subjectIds.math, max_marks: 10 }] })).status).toBe(409); // duplicate name
     expect((await admin.post('/school/grading-policies', { name: 'bad', bands: [{ min_percent: 50, grade: 'A' }] })).status).toBe(400);
     expect((await admin.post('/school/grading-policies', { name: 'school-defined', bands: [{ min_percent: 0, grade: 'X' }] })).status).toBe(201);
   });

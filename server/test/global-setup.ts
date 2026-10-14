@@ -3,52 +3,73 @@ import fs from 'node:fs';
 import path from 'node:path';
 import pg from 'pg';
 import { CONTROL_MIGRATIONS_DIR, migrate, setupRole } from '../src/migrate.js';
+import { MARKER_DB, assertClusterMarker, planCleanup, validateTestEnvironment, UnsafeTestEnvironmentError, type ValidatedTestEnv } from './safety.js';
 
-const need = (k: string): string => {
-  const v = process.env[k];
-  if (!v) throw new Error(`${k} must be set (see .env.example). A real PostgreSQL is required; tests do not mock the database.`);
-  return v;
-};
 const pw = (url: string) => decodeURIComponent(new URL(url).password);
+const qi = (s: string) => `"${s.replace(/"/g, '""')}"`;
 
-async function recreateSchema(url: string): Promise<void> {
-  const c = new pg.Client({ connectionString: url });
+async function withClient<T>(url: string, fn: (c: pg.Client) => Promise<T>): Promise<T> {
+  const c = new pg.Client({ connectionString: url, connectionTimeoutMillis: 5000 });
   await c.connect();
-  await c.query('DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;');
-  await c.end();
+  try {
+    return await fn(c);
+  } finally {
+    await c.end();
+  }
 }
 
-async function ensureDb(adminUrl: string, name: string): Promise<void> {
-  const c = new pg.Client({ connectionString: adminUrl });
-  await c.connect();
-  if (!(await c.query('SELECT 1 FROM pg_database WHERE datname = $1', [name])).rowCount) await c.query(`CREATE DATABASE ${name}`);
-  await c.end();
+/** Drops ONLY objects attributable to this test environment (see planCleanup). Exported for the guard tests. */
+export async function cleanupOwnedObjects(
+  v: Pick<ValidatedTestEnv, 'adminUrl' | 'markerUrl' | 'controlOwner'>,
+): Promise<{ databases: string[]; roles: string[] }> {
+  const registry = await withClient(v.controlOwner, async (c) => {
+    const t = await c.query(`SELECT to_regclass('public.schools') AS t`).catch(() => ({ rows: [{ t: null }] }));
+    return t.rows[0]!.t ? (await c.query('SELECT db_name, db_role FROM schools')).rows : [];
+  }).catch((e: { code?: string }) => {
+    if (e.code === '3D000') return []; // control test database does not exist yet
+    throw e;
+  });
+  const ledger = await withClient(v.markerUrl, async (c) => {
+    await c.query('CREATE TABLE IF NOT EXISTS created_objects (kind text NOT NULL, name text PRIMARY KEY)');
+    return (await c.query('SELECT kind, name FROM created_objects')).rows;
+  });
+  const plan = planCleanup({ registry, ledger }); // throws before any destructive statement
+  await withClient(v.adminUrl, async (a) => {
+    for (const d of plan.databases) await a.query(`DROP DATABASE IF EXISTS ${qi(d)} WITH (FORCE)`);
+    for (const r of plan.roles) await a.query(`DROP ROLE IF EXISTS ${qi(r)}`);
+  });
+  await withClient(v.markerUrl, async (c) => {
+    await c.query('DELETE FROM created_objects WHERE name = ANY($1)', [ledger.map((l) => l.name)]);
+  });
+  return plan;
 }
 
-/** Recreates the disposable test databases from the real migrations and removes leftover per-school databases/roles. */
+/** Validates the environment, proves the cluster is disposable, then recreates the test databases. */
+export async function runSetup(env: NodeJS.ProcessEnv): Promise<void> {
+  // 1. Pure validation: no connection, no SQL.
+  const v = validateTestEnvironment(env);
+  // 2. Read-only cluster identification.
+  await withClient(v.markerUrl, (m) => assertClusterMarker(m, v.clusterId)).catch((e) => {
+    if (e instanceof UnsafeTestEnvironmentError) throw e;
+    throw new UnsafeTestEnvironmentError(`cannot verify the cluster marker database "${MARKER_DB}" (${(e as Error).message})`);
+  });
+  // 3. Only now: destructive operations, restricted to attributable objects.
+  await cleanupOwnedObjects(v);
+  await withClient(v.adminUrl, async (a) => {
+    for (const name of [v.controlDb, v.sharedDb]) {
+      if (!(await a.query('SELECT 1 FROM pg_database WHERE datname = $1', [name])).rowCount) await a.query(`CREATE DATABASE ${qi(name)}`);
+    }
+  });
+  await setupRole(v.adminUrl, 'shikkha_app', pw(v.sharedApp));
+  await setupRole(v.adminUrl, 'petra_control_app', pw(v.controlApp));
+  for (const url of [v.sharedOwner, v.controlOwner]) await withClient(url, (c) => c.query('DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;'));
+  await migrate(v.sharedOwner);
+  await migrate(v.controlOwner, { dir: CONTROL_MIGRATIONS_DIR, lockKey: 727002 });
+}
+
 export default async function setup(): Promise<void> {
   const envFile = path.resolve(import.meta.dirname, '../../.env');
   if (fs.existsSync(envFile)) process.loadEnvFile(envFile);
   if (!process.env.PETRA_MASTER_KEY) process.env.PETRA_MASTER_KEY = randomBytes(32).toString('base64');
-  const sharedOwner = need('TEST_MIGRATION_DATABASE_URL');
-  const sharedApp = need('TEST_DATABASE_URL');
-  const ctlOwner = need('TEST_CONTROL_MIGRATION_DATABASE_URL');
-  const ctlApp = need('TEST_CONTROL_DATABASE_URL');
-  const admin = need('TEST_PROVISIONER_DATABASE_URL');
-
-  // Orphaned dedicated school databases/roles from previous runs.
-  const a = new pg.Client({ connectionString: admin });
-  await a.connect();
-  for (const r of (await a.query(`SELECT datname FROM pg_database WHERE datname ~ '^(sk_[a-f0-9]{12}|restore_.*|verify_sk_.*)$'`)).rows)
-    await a.query(`DROP DATABASE "${r.datname}" WITH (FORCE)`);
-  for (const r of (await a.query(`SELECT rolname FROM pg_roles WHERE rolname ~ '^sk_[a-f0-9]{12}_app$'`)).rows) await a.query(`DROP ROLE "${r.rolname}"`);
-  await a.end();
-
-  await ensureDb(admin, new URL(ctlOwner).pathname.slice(1));
-  await setupRole(admin, 'shikkha_app', pw(sharedApp));
-  await setupRole(admin, 'petra_control_app', pw(ctlApp));
-  await recreateSchema(sharedOwner);
-  await migrate(sharedOwner);
-  await recreateSchema(ctlOwner);
-  await migrate(ctlOwner, { dir: CONTROL_MIGRATIONS_DIR, lockKey: 727002 });
+  await runSetup(process.env);
 }

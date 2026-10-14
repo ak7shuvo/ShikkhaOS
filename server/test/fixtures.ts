@@ -6,6 +6,7 @@ import { SecretBox, loadMasterKeys } from '../src/secrets.js';
 import { loadConfig } from '../src/config.js';
 import { todayIn } from '../src/entitlements.js';
 import { uniqueCode } from './helpers.js';
+import { MARKER_DB, urlWithDb } from './safety.js';
 
 export function masterKeyEnv() {
   return { PETRA_MASTER_KEY: process.env.PETRA_MASTER_KEY!, PETRA_MASTER_KEY_ID: 'k1' };
@@ -55,4 +56,22 @@ export async function registerNew(f: ControlFixture, prefix: string, extra: Part
 export async function provisionNew(f: ControlFixture, prefix: string): Promise<{ id: string; slug: string; result: ProvisionResult }> {
   const r = await registerNew(f, prefix);
   return { ...r, result: await provisionSchool(f.deps, r.id) };
+}
+
+/**
+ * Scratch (restore-drill) database names are test-only and recorded in the marker ledger so that the guarded
+ * global setup can positively attribute — and later clean up — exactly these databases.
+ */
+export async function scratchDbName(tag: string): Promise<string> {
+  if (!/^[a-z0-9]{1,8}$/.test(tag)) throw new Error('invalid scratch tag');
+  const name = `petra_test_scratch_${tag}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 4)}`;
+  const c = new pg.Client({ connectionString: urlWithDb(adminUrl(), MARKER_DB) });
+  await c.connect();
+  try {
+    await c.query('CREATE TABLE IF NOT EXISTS created_objects (kind text NOT NULL, name text PRIMARY KEY)');
+    await c.query(`INSERT INTO created_objects (kind, name) VALUES ('database', $1)`, [name]);
+  } finally {
+    await c.end();
+  }
+  return name;
 }
