@@ -43,7 +43,7 @@ CREATE TABLE schools (
   slug                    text NOT NULL UNIQUE CHECK (slug ~ '^[a-z0-9][a-z0-9-]{1,40}$'),
   name                    text NOT NULL CHECK (length(name) BETWEEN 2 AND 200),
   status                  text NOT NULL DEFAULT 'requested'
-                          CHECK (status IN ('requested','provisioning','active','suspended','offboarding','archived','failed')),
+                          CHECK (status IN ('requested','provisioning','active','maintenance','suspended','offboarding','archived','failed')),
   -- 'dedicated' = own database (default for every new school). 'shared' = Phase 1 shared database,
   -- kept ONLY as a migration/rollback path.
   db_mode                 text NOT NULL DEFAULT 'dedicated' CHECK (db_mode IN ('shared','dedicated')),
@@ -63,7 +63,7 @@ CREATE TABLE schools (
   created_by              uuid REFERENCES platform_admins(id),
   created_at              timestamptz NOT NULL DEFAULT now(),
   updated_at              timestamptz NOT NULL DEFAULT now(),
-  CHECK (db_mode = 'shared' OR status IN ('requested','provisioning','failed') OR (db_name IS NOT NULL AND db_role IS NOT NULL AND db_secret_enc IS NOT NULL))
+  CHECK (db_mode = 'shared' OR status IN ('requested','provisioning','failed','archived') OR (db_name IS NOT NULL AND db_role IS NOT NULL AND db_secret_enc IS NOT NULL))
 );
 CREATE TRIGGER schools_updated BEFORE UPDATE ON schools FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 

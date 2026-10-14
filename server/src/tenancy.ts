@@ -3,7 +3,7 @@ import type { Config } from './config.js';
 import { assertRestrictedRole, type Db } from './db.js';
 import { SecretBox } from './secrets.js';
 
-export type SchoolStatus = 'requested' | 'provisioning' | 'active' | 'suspended' | 'offboarding' | 'archived' | 'failed';
+export type SchoolStatus = 'requested' | 'provisioning' | 'active' | 'maintenance' | 'suspended' | 'offboarding' | 'archived' | 'failed';
 
 export interface RegistryEntry {
   id: string;
@@ -27,7 +27,7 @@ export interface RegistryEntry {
 
 export class TenantUnavailableError extends Error {
   constructor(
-    public readonly code: 'TENANT_NOT_READY' | 'TENANT_UNAVAILABLE' | 'SCHOOL_SUSPENDED' | 'SCHOOL_OFFBOARDED',
+    public readonly code: 'TENANT_NOT_READY' | 'TENANT_UNAVAILABLE' | 'SCHOOL_MAINTENANCE' | 'SCHOOL_SUSPENDED' | 'SCHOOL_OFFBOARDED',
     message: string,
   ) {
     super(message);
@@ -87,6 +87,7 @@ export class TenantRouter {
   /** Throws if a school must not receive authenticated traffic at all. */
   assertRoutable(e: RegistryEntry): void {
     if (e.status === 'active') return;
+    if (e.status === 'maintenance') throw new TenantUnavailableError('SCHOOL_MAINTENANCE', 'This school is undergoing maintenance; please try again shortly');
     if (e.status === 'suspended') throw new TenantUnavailableError('SCHOOL_SUSPENDED', 'This school account is suspended');
     if (e.status === 'offboarding' || e.status === 'archived') throw new TenantUnavailableError('SCHOOL_OFFBOARDED', 'This school account is no longer active');
     throw new TenantUnavailableError('TENANT_NOT_READY', 'This school is not ready yet');

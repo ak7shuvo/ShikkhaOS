@@ -20,7 +20,7 @@ export async function publicRoutes(app: FastifyInstance): Promise<void> {
     const r = (
       await control.query(
         `SELECT s.slug, b.display_name, b.logo_url, b.primary_color, b.accent_color FROM schools s JOIN school_branding b ON b.school_id = s.id
-          WHERE s.slug = $1 AND s.status IN ('active','suspended')`,
+          WHERE s.slug = $1 AND s.status IN ('active','maintenance','suspended')`,
         [slug],
       )
     ).rows[0];

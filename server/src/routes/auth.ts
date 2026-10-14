@@ -47,6 +47,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       await burnPasswordCheck(body.password);
       throw fail();
     }
+    if (entry.status === 'maintenance') throw new AppError(503, 'SCHOOL_MAINTENANCE', 'This school is undergoing maintenance; please try again shortly');
     let pool;
     try {
       pool = await router.poolFor(entry);

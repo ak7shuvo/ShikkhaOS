@@ -185,7 +185,7 @@ export async function checkSchoolHealth(d: Pick<ProvisionDeps, 'control' | 'secr
   const add = (name: string, ok: boolean, detail?: string) => checks.push({ name, ok, detail });
   let schemaVersion: string | null = null;
   let pending: string[] = [];
-  if (e.db_mode === 'shared' || !e.db_name || !e.db_role || !e.db_secret_enc) {
+  if (!e.db_name || !e.db_role || !e.db_secret_enc) {
     return { ok: false, schema_version: null, pending_migrations: [], checks: [{ name: 'dedicated_database_configured', ok: false }] };
   }
   const c = new pg.Client({ host: e.db_host!, port: e.db_port!, database: e.db_name, user: e.db_role, password: d.secrets.decrypt(e.db_secret_enc, e.id), connectionTimeoutMillis: 5000 });
