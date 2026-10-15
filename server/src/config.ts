@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { TRUST_PROXY_NONE, productionDbTlsProblems, trustProxyProblems } from './production-guards.js';
 
 const bool = z.enum(['true', 'false']).transform((v) => v === 'true');
 
@@ -21,7 +22,8 @@ const schema = z.object({
     .string()
     .regex(/^[a-z0-9_-]{1,20}$/)
     .optional(),
-  // '' = do not trust X-Forwarded-*; a number = trusted proxy hop count; otherwise comma-separated proxy IPs/CIDRs.
+  // '' or 'none' = do not trust X-Forwarded-*; a number = trusted proxy hop count; otherwise comma-separated proxy IPs/CIDRs.
+  // In production it must be set explicitly (see production-guards.ts).
   TRUST_PROXY: z.string().default(''),
   SESSION_IDLE_MINUTES: z.coerce
     .number()
@@ -74,7 +76,7 @@ export type Config = Omit<z.infer<typeof schema>, 'COOKIE_SECURE' | 'TRUST_PROXY
 /** Maps the TRUST_PROXY string to Fastify's `trustProxy` option. */
 export function parseTrustProxy(v: string): boolean | number | string[] {
   const t = v.trim();
-  if (t === '') return false;
+  if (t === '' || t.toLowerCase() === TRUST_PROXY_NONE) return false;
   if (/^\d+$/.test(t)) return Number(t);
   return t
     .split(',')
@@ -91,14 +93,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const c = parsed.data;
   const cookieSecure = c.COOKIE_SECURE ?? c.NODE_ENV === 'production';
   if (c.NODE_ENV === 'production') {
-    if (!cookieSecure) throw new Error('COOKIE_SECURE must be true in production');
-    if (c.TRUST_PROXY.trim() === '') {
-      // Not fatal in code (a deployment may terminate TLS directly), but make the choice explicit.
-      console.warn('[config] TRUST_PROXY is empty: client IPs (rate limiting) are taken from the TCP peer. Set it when behind a reverse proxy.');
-    }
-    if (c.ALLOWED_ORIGINS.some((o) => !o.startsWith('https://'))) {
-      throw new Error('ALLOWED_ORIGINS must be https:// origins in production');
-    }
+    // Collect every problem so an operator fixes the configuration in one pass. Messages name settings, never values.
+    const problems: string[] = [];
+    if (!cookieSecure) problems.push('COOKIE_SECURE must be true in production');
+    if (c.ALLOWED_ORIGINS.some((o) => !o.startsWith('https://'))) problems.push('ALLOWED_ORIGINS must be https:// origins in production');
+    problems.push(...trustProxyProblems(c.TRUST_PROXY));
+    problems.push(...productionDbTlsProblems(c));
+    if (problems.length) throw new Error(`Invalid production configuration: ${problems.join('; ')}`);
   }
   return { ...c, COOKIE_SECURE: cookieSecure, TRUST_PROXY: parseTrustProxy(c.TRUST_PROXY) };
 }

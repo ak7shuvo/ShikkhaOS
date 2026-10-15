@@ -13,7 +13,15 @@ describe('config validation', () => {
   it('requires secure cookies and https origins in production', () => {
     expect(() => loadConfig({ ...base, NODE_ENV: 'production', COOKIE_SECURE: 'false' } as NodeJS.ProcessEnv)).toThrow(/COOKIE_SECURE/);
     expect(() => loadConfig({ ...base, NODE_ENV: 'production' } as NodeJS.ProcessEnv)).toThrow(/https/);
-    expect(loadConfig({ ...base, NODE_ENV: 'production', ALLOWED_ORIGINS: 'https://app.example.test' } as NodeJS.ProcessEnv).COOKIE_SECURE).toBe(true);
+    const secureProd = {
+      ...base,
+      NODE_ENV: 'production',
+      ALLOWED_ORIGINS: 'https://app.example.test',
+      TRUST_PROXY: '1',
+      CONTROL_DB_SSL: 'true',
+      SCHOOL_DB_SSL: 'true',
+    };
+    expect(loadConfig(secureProd as NodeJS.ProcessEnv).COOKIE_SECURE).toBe(true); // see production-guards.test.ts for the full matrix
   });
   it('parses TRUST_PROXY as off, a hop count, or a CIDR/IP list', () => {
     expect(parseTrustProxy('')).toBe(false);

@@ -20,10 +20,16 @@ async function loadEntry(d: ProvisionDeps, id: string): Promise<RegistryEntry> {
 }
 
 /** pg_* tools get the password via the environment, never on the command line. */
-function pgEnv(url: string): { env: NodeJS.ProcessEnv; args: string[] } {
+export function pgEnv(url: string, base: NodeJS.ProcessEnv = process.env): { env: NodeJS.ProcessEnv; args: string[] } {
   const u = new URL(url);
+  const env: NodeJS.ProcessEnv = { ...base, PGPASSWORD: decodeURIComponent(u.password) };
+  if (base.NODE_ENV === 'production') {
+    // libpq defaults to opportunistic TLS (`prefer`); production dumps/restores must verify certificate and host name.
+    env.PGSSLMODE = 'verify-full';
+    if (base.DB_SSL_CA_FILE && !base.PGSSLROOTCERT) env.PGSSLROOTCERT = base.DB_SSL_CA_FILE;
+  }
   return {
-    env: { ...process.env, PGPASSWORD: decodeURIComponent(u.password) },
+    env,
     args: ['-h', u.hostname, '-p', u.port || '5432', '-U', decodeURIComponent(u.username)],
   };
 }

@@ -8,7 +8,8 @@ import { writeBuildProfile } from '../build-profile.js';
 import { loadConfig } from '../config.js';
 import { createPool } from '../db.js';
 import { todayIn } from '../entitlements.js';
-import { tlsOptions } from '../tls.js';
+import { assertOperatorUrls } from '../production-guards.js';
+import { runtimeDbTls } from '../tls.js';
 import { exportSchool, finalizeOffboarding, resetSchoolAccountPassword, restoreDump, startOffboarding } from '../operations.js';
 import { hashPassword, PASSWORD_MIN_LENGTH } from '../passwords.js';
 import { DEFAULT_MAINTENANCE_DBS, checkDatabaseAcls, hardenDatabaseAccess, type AclSpec } from '../db-access.js';
@@ -48,13 +49,15 @@ if (!cmd || cmd === 'help')
     'commands: register provision migrate health rotate-secret reencrypt-secrets sweep export restore offboard-start offboard-finalize admin-reset migrate-to-dedicated rollback-to-shared import-platform-admins platform-admin-create build-profile seed-demo generate-master-key generate-signing-key harden-db-access migration-inspect migration-recover',
   );
 
-const config = loadConfig();
-const control = createPool(config.CONTROL_DATABASE_URL, tlsOptions(config.CONTROL_DB_SSL, config.DB_SSL_CA_FILE));
+const config = loadConfig(); // throws a non-sensitive error for unsafe production configuration
+assertOperatorUrls(process.env); // production: privileged URLs must demand sslmode=verify-full
+const dbTls = runtimeDbTls(config);
+const control = createPool(config.CONTROL_DATABASE_URL, dbTls.control);
 const adminUrl = process.env.PROVISIONER_DATABASE_URL ?? die('PROVISIONER_DATABASE_URL is required');
 const secrets = new SecretBox(loadMasterKeys(config));
 const signingKey = process.env.PETRA_BACKUP_SIGNING_KEY ? Buffer.from(process.env.PETRA_BACKUP_SIGNING_KEY, 'base64') : undefined;
 if (signingKey && signingKey.length !== 32) die('PETRA_BACKUP_SIGNING_KEY must be base64 of exactly 32 bytes');
-const deps: ProvisionDeps = { control, secrets, adminUrl, backupSigningKey: signingKey };
+const deps: ProvisionDeps = { control, secrets, adminUrl, backupSigningKey: signingKey, schoolSsl: dbTls.school };
 
 const dbNameOf = (url: string | undefined) => (url ? decodeURIComponent(new URL(url).pathname.slice(1)) : undefined);
 /** Which databases are protected from application roles. Maintenance databases can be skipped with --skip-maintenance. */

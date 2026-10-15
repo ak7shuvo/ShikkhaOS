@@ -1,4 +1,7 @@
 import { setupRole } from '../migrate.js';
+import { assertOperatorUrls } from '../production-guards.js';
+
+assertOperatorUrls(process.env, ['PROVISIONER_DATABASE_URL', 'MIGRATION_DATABASE_URL']); // production: verified TLS required
 
 // Legacy shared-database role (Phase 1 layout). Only needed while any school is db_mode='shared'.
 const url = process.env.PROVISIONER_DATABASE_URL ?? process.env.MIGRATION_DATABASE_URL;

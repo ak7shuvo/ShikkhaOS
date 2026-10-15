@@ -1,4 +1,7 @@
 import { CONTROL_MIGRATIONS_DIR, migrate } from '../migrate.js';
+import { assertOperatorUrls } from '../production-guards.js';
+
+assertOperatorUrls(process.env, ['CONTROL_MIGRATION_DATABASE_URL']); // production: verified TLS required
 
 const url = process.env.CONTROL_MIGRATION_DATABASE_URL;
 if (!url) {
