@@ -7,3 +7,6 @@ dist
 coverage
 .DS_Store
 builds
+e2e/.state
+e2e/test-results
+e2e/playwright-report

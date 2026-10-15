@@ -16,7 +16,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       # The destructive server tests only run against the throwaway PostgreSQL started below: it listens on loopback inside this
       # runner, is created fresh for this run with random passwords, and carries the cluster marker the test guard demands
@@ -25,9 +25,12 @@ jobs:
       PETRA_TEST_CLUSTER: disposable
       PGPORT_TEST: '54329'
     steps:
-      - uses: actions/checkout@v4
+      # Actions are pinned to full commit SHAs (verified against the upstream tags below; both run on Node 24).
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 22
           cache: npm
@@ -62,6 +65,8 @@ jobs:
           echo "::add-mask::$pgpass"
           echo "::add-mask::$sharedpw"
           echo "::add-mask::$controlpw"
+          masterkey=$(openssl rand -base64 32)
+          echo "::add-mask::$masterkey" # before it is written to GITHUB_ENV, i.e. before any step can print its environment
 
           docker run -d --name petra-ci-pg \
             -e POSTGRES_PASSWORD="$pgpass" \
@@ -89,7 +94,7 @@ jobs:
             echo "TEST_CONTROL_MIGRATION_DATABASE_URL=$(printf "$base" "postgres:$pgpass" petra_control_test)"
             echo "PETRA_TEST_TLS_CA=$certs/ca.crt"
             echo "PETRA_TEST_TLS_UNTRUSTED_CA=$certs/untrusted-ca.crt"
-            echo "PETRA_MASTER_KEY=$(openssl rand -base64 32)"
+            echo "PETRA_MASTER_KEY=$masterkey"
           } >> "$GITHUB_ENV"
 
       - name: Server tests (real PostgreSQL, includes the TLS trusted-CA tests)
@@ -100,6 +105,25 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      # Browser smoke test: school-slug login, grace-period banner, logout, old cookie rejected. e2e/prepare.ts and
+      # e2e/playwright.config.ts both run the same disposable-cluster guard as the server tests (marker, loopback, test names).
+      - name: Browser smoke E2E
+        run: npm run test -w e2e
+
+      # Negative control: with the logout request dropped the very same test MUST fail, on the logout assertions.
+      - name: Browser smoke E2E negative control (broken logout must be detected)
+        run: |
+          if npm run test:negative -w e2e > "$RUNNER_TEMP/e2e-negative.log" 2>&1; then
+            echo "::error::negative control passed although logout was broken; the E2E would not catch a logout regression"
+            exit 1
+          fi
+          grep -q "old session cookie must be rejected after logout" "$RUNNER_TEMP/e2e-negative.log"
+          grep -q "browser session cookie must be cleared by logout" "$RUNNER_TEMP/e2e-negative.log"
+          echo "negative control failed for the intended reasons"
 
       - name: Stop the test database
         if: always()
