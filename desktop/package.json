@@ -17,7 +17,8 @@
     "typecheck": "tsc -p tsconfig.test.json",
     "test": "vitest run",
     "prepare:app": "node scripts/build.mjs prepare",
-    "dev": "node scripts/build.mjs prepare && electron dist/main.js",
-    "package:linux": "node scripts/build.mjs package"
+    "dev": "npm run ensure:electron && node scripts/build.mjs prepare && electron dist/main.js",
+    "package:linux": "node scripts/build.mjs package",
+    "ensure:electron": "node ../node_modules/electron/install.js"
   }
 }
