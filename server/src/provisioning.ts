@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { TlsOptions } from './tls.js';
 import pg from 'pg';
 import { type Db } from './db.js';
 import { APP_ROLE_PLACEHOLDER, SCHOOL_MIGRATIONS_DIR, appliedMigrations, migrate, migrationFiles } from './migrate.js';
@@ -22,6 +23,8 @@ export interface ProvisionDeps {
   runtimeHost?: string;
   runtimePort?: number;
   schoolMigrationsDir?: string;
+  /** TLS options for health-check connections made AS a school role (same verified-TLS settings as the API's school pools). */
+  schoolSsl?: false | TlsOptions;
   /** HMAC key for backup manifests (PETRA_BACKUP_SIGNING_KEY). Keep it separate from the backups and from the master key. */
   backupSigningKey?: Buffer;
   /** Test-only hooks. */
@@ -215,7 +218,7 @@ export interface HealthReport {
 
 /** Connects with the school's OWN runtime credential (as the API would) and verifies isolation basics. */
 export async function checkSchoolHealth(
-  d: Pick<ProvisionDeps, 'control' | 'secrets' | 'adminUrl' | 'schoolMigrationsDir'>,
+  d: Pick<ProvisionDeps, 'control' | 'secrets' | 'adminUrl' | 'schoolMigrationsDir' | 'schoolSsl'>,
   e: RegistryEntry,
   opts: { requireSchoolRow?: boolean } = {},
 ): Promise<HealthReport> {
@@ -233,6 +236,7 @@ export async function checkSchoolHealth(
     user: e.db_role,
     password: d.secrets.decrypt(e.db_secret_enc, e.id),
     connectionTimeoutMillis: 5000,
+    ...(d.schoolSsl ? { ssl: d.schoolSsl } : {}),
   });
   try {
     const t0 = Date.now();

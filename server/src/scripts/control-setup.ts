@@ -1,4 +1,7 @@
 import { setupRole } from '../migrate.js';
+import { assertOperatorUrls } from '../production-guards.js';
+
+assertOperatorUrls(process.env, ['PROVISIONER_DATABASE_URL']); // production: verified TLS required
 
 const url = process.env.PROVISIONER_DATABASE_URL;
 const pw = process.env.CONTROL_APP_PASSWORD;
