@@ -125,6 +125,41 @@ jobs:
           grep -q "browser session cookie must be cleared by logout" "$RUNNER_TEMP/e2e-negative.log"
           echo "negative control failed for the intended reasons"
 
+      # Desktop shell (Electron around the unchanged web UI): same disposable cluster, real API, headless X server.
+      - name: Install Xvfb for the desktop smoke tests
+        run: sudo apt-get install -y -qq xvfb
+
+      - name: Desktop shell smoke (branded profile build, development launch)
+        run: npm run test:desktop -w e2e
+
+      - name: Desktop shell smoke negative control (broken logout must be detected)
+        run: |
+          if npm run test:desktop:negative -w e2e > "$RUNNER_TEMP/desktop-negative.log" 2>&1; then
+            echo "::error::desktop negative control passed although logout was broken"
+            exit 1
+          fi
+          grep -q "session must be rejected after logout" "$RUNNER_TEMP/desktop-negative.log"
+          echo "desktop negative control failed for the intended reason"
+
+      - name: Desktop shell smoke against the PACKAGED app (fuses applied)
+        run: npm run test:desktop:packaged -w e2e
+
+      - name: Build the Linux artifacts (AppImage + tar.gz, generic build, placeholder API origin)
+        run: SHIKKHAOS_RELEASE=1 npm run package:linux -w desktop -- --api https://api.example.test
+
+      - name: Checksums
+        run: cd desktop/release && sha256sum *.AppImage *.tar.gz | tee SHA256SUMS
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: shikkhaos-desktop-linux-generic
+          path: |
+            desktop/release/*.AppImage
+            desktop/release/*.tar.gz
+            desktop/release/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Stop the test database
         if: always()
         run: docker rm -f petra-ci-pg || true
