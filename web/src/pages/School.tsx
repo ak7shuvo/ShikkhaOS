@@ -10,9 +10,8 @@ interface School {
   address: string | null;
   phone: string | null;
   email: string | null;
-  license_status: string | null;
-  license_plan: string | null;
-  license_ends_on: string | null;
+  subscription: { level: string; status: string; full_access_until: string; read_only_until: string; retention_until: string };
+  branding: { display_name: string; logo_url: string | null; primary_color: string; accent_color: string } | null;
 }
 interface Policy {
   id: string;
@@ -28,7 +27,14 @@ export function SchoolSettings() {
   return (
     <div>
       <h1>{t('school.profile')}</h1>
-      <Async q={q}>{(s) => <ProfileForm school={s} onSaved={q.reload} />}</Async>
+      <Async q={q}>
+        {(s) => (
+          <>
+            <ProfileForm school={s} onSaved={q.reload} />
+            {s.branding && <BrandingForm branding={s.branding} onSaved={q.reload} />}
+          </>
+        )}
+      </Async>
       <Card title={t('school.grading')}>
         <p className="muted">{t('school.gradingNote')}</p>
         <Async q={pol}>
@@ -117,9 +123,10 @@ function ProfileForm({ school, onSaved }: { school: School; onSaved: () => void 
         </Button>
       </form>
       <p className="muted">
-        {t('school.license')}: {school.license_plan ?? '—'} · {school.license_status ?? '—'}
-        {school.license_ends_on ? ` · ${school.license_ends_on}` : ''}
+        {t('school.license')}: {school.subscription.status} · {t('platform.fullUntil')} {school.subscription.full_access_until} · {t('platform.readOnlyUntil')}{' '}
+        {school.subscription.read_only_until} · {t('platform.retentionUntil')} {school.subscription.retention_until}
       </p>
+      <ExportButton />
     </Card>
   );
 }
@@ -182,5 +189,71 @@ function PolicyForm({ onSaved }: { onSaved: () => void }) {
       </div>
       <ErrorBanner error={a.error} />
     </form>
+  );
+}
+
+function BrandingForm({ branding, onSaved }: { branding: NonNullable<School['branding']>; onSaved: () => void }) {
+  const { t } = useI18n();
+  const [f, setF] = useState({
+    display_name: branding.display_name,
+    logo_url: branding.logo_url ?? '',
+    primary_color: branding.primary_color,
+    accent_color: branding.accent_color,
+  });
+  const a = useAction();
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    void a.run(async () => {
+      await api.put('/school/branding', { ...f, logo_url: f.logo_url.trim() === '' ? null : f.logo_url.trim() });
+      onSaved();
+    });
+  };
+  return (
+    <Card title={t('school.branding')}>
+      <form onSubmit={submit} className="stack">
+        <div className="grid">
+          <TextField
+            label={t('school.displayName')}
+            required
+            minLength={2}
+            maxLength={80}
+            value={f.display_name}
+            onChange={(e) => setF({ ...f, display_name: e.target.value })}
+          />
+          <TextField label={t('common.logoUrl')} type="url" hint="https://" value={f.logo_url} onChange={(e) => setF({ ...f, logo_url: e.target.value })} />
+          <TextField label={t('school.primaryColor')} type="color" value={f.primary_color} onChange={(e) => setF({ ...f, primary_color: e.target.value })} />
+          <TextField label={t('school.accentColor')} type="color" value={f.accent_color} onChange={(e) => setF({ ...f, accent_color: e.target.value })} />
+        </div>
+        <p className="muted">{t('school.contrastNote')}</p>
+        <ErrorBanner error={a.error} />
+        {a.done && <Notice>{t('common.saved')}</Notice>}
+        <Button type="submit" busy={a.busy}>
+          {t('common.save')}
+        </Button>
+      </form>
+    </Card>
+  );
+}
+
+function ExportButton() {
+  const { t } = useI18n();
+  const a = useAction();
+  const download = () =>
+    void a.run(async () => {
+      const data = await api.get<unknown>('/school/export');
+      const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+      const el = document.createElement('a');
+      el.href = url;
+      el.download = 'school-export.json';
+      el.click();
+      URL.revokeObjectURL(url);
+    });
+  return (
+    <div className="row">
+      <Button variant="secondary" small onClick={download} busy={a.busy}>
+        {t('school.export')}
+      </Button>
+      <ErrorBanner error={a.error} />
+    </div>
   );
 }

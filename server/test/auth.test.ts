@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { Client, harness, loginAs, PASSWORD, seed, type Harness } from './helpers.js';
+import { Client, harness, loginAs, PASSWORD, seed, setSubscription, type Harness } from './helpers.js';
 import type { SeededSchool } from '../src/seed-data.js';
 
 let h: Harness;
@@ -80,7 +80,9 @@ describe('authentication', () => {
 
   it('stores only a hash of the session token', async () => {
     const c = await loginAs(h, A.users.controller.email);
-    const token = c.cookie.split('=')[1]!;
+    const value = c.cookie.split('=')[1]!;
+    expect(value.startsWith(`${A.schoolId}.`)).toBe(true);
+    const token = value.slice(37);
     const { rows } = await h.owner.query('SELECT count(*)::int AS n FROM sessions WHERE token_hash = $1', [token]);
     expect(rows[0].n).toBe(0);
   });
@@ -98,13 +100,13 @@ describe('authentication', () => {
     await h.owner.query(`UPDATE users SET status = 'active' WHERE id = $1`, [A.users.teacher.id]);
   });
 
-  it('blocks access when the school is suspended or the licence is inactive', async () => {
+  it('blocks access when the school row is suspended or the subscription is blocked', async () => {
     const c = await loginAs(h, A.users.admin.email);
-    await h.owner.query(`UPDATE school_licenses SET status = 'expired' WHERE school_id = $1`, [A.schoolId]);
+    await setSubscription(h, A.schoolId, { status: 'suspended' });
     const lic = await c.get('/school');
     expect(lic.status).toBe(403);
-    expect(lic.body.error.code).toBe('LICENSE_INACTIVE');
-    await h.owner.query(`UPDATE school_licenses SET status = 'active' WHERE school_id = $1`, [A.schoolId]);
+    expect(lic.body.error.code).toBe('SUBSCRIPTION_BLOCKED');
+    await setSubscription(h, A.schoolId, { status: 'active' });
     expect((await c.get('/school')).status).toBe(200);
     await h.owner.query(`UPDATE schools SET status = 'suspended' WHERE id = $1`, [A.schoolId]);
     expect((await c.get('/school')).status).toBe(409);
@@ -118,24 +120,75 @@ describe('authentication', () => {
     expect(r.body.error.code).toBe('BAD_ORIGIN');
   });
 
-  it('cannot switch into a school the user is not a member of', async () => {
-    const other = await seed(h, 'auth-other');
-    const c = await loginAs(h, A.users.admin.email);
-    const r = await c.post('/auth/switch-school', { school_id: other.schoolId });
-    expect(r.status).toBe(403);
-    expect((await c.get('/auth/me')).body.active_school_id).toBe(A.schoolId);
+  it('a user belonging to two schools (shared mode) can only log in to a school where they hold an active membership', async () => {
+    const other = await seed(h, 'auth-multi');
+    const email = A.users.principal.email;
+    // Not a member of `other`: the same credentials must not open it.
+    expect((await new Client(h.app).login(email, PASSWORD, other.code)).status).toBe(401);
+    await h.owner.query(`INSERT INTO school_memberships (school_id, user_id, role) VALUES ($1,$2,'teacher')`, [other.schoolId, A.users.principal.id]);
+    const c = new Client(h.app);
+    const r = await c.login(email, PASSWORD, other.code);
+    expect(r.status).toBe(200);
+    // Roles are per school: teacher in `other`, never the principal role from A.
+    expect(r.body.roles).toEqual(['teacher']);
+    expect(r.body.school.id).toBe(other.schoolId);
+    const mine = await loginAs(h, email);
+    expect((await mine.get('/auth/me')).body.roles).toEqual(['principal']);
   });
 
-  it('multi-school users must pick a school, and can only pick their own', async () => {
-    const other = await seed(h, 'auth-multi');
-    await h.owner.query(`INSERT INTO school_memberships (school_id, user_id, role) VALUES ($1,$2,'teacher')`, [other.schoolId, A.users.principal.id]);
-    const c = await loginAs(h, A.users.principal.email);
-    expect((await c.get('/auth/me')).body.active_school_id).toBeNull();
-    expect((await c.get('/exams')).status).toBe(409);
-    expect((await c.post('/auth/switch-school', { school_id: other.schoolId })).status).toBe(200);
-    // roles are per-school: teacher in `other`, not principal
-    expect((await c.get('/auth/me')).body.roles).toEqual(['teacher']);
-    expect((await c.get('/exams')).status).toBe(200);
+  it('a session cookie is only valid in the school that issued it (forged school prefix)', async () => {
+    const other = await seed(h, 'auth-forge');
+    const c = await loginAs(h, A.users.admin.email);
+    const token = c.cookie.split('=')[1]!.slice(37);
+    const forged = new Client(h.app);
+    forged.cookie = `sid=${other.schoolId}.${token}`;
+    expect((await forged.get('/auth/me')).status).toBe(401);
+    expect((await forged.get('/students')).status).toBe(401);
+    const unknownSchool = new Client(h.app);
+    unknownSchool.cookie = `sid=00000000-0000-4000-8000-000000000000.${token}`;
+    expect((await unknownSchool.get('/auth/me')).status).toBe(401);
+  });
+
+  it('login requires a school slug; unknown or unready schools are indistinguishable from bad credentials', async () => {
+    const c = new Client(h.app);
+    expect((await c.req('POST', '/auth/login', { email: A.users.admin.email, password: PASSWORD })).status).toBe(400);
+    const wrongSlug = await c.login(A.users.admin.email, PASSWORD, 'no-such-school');
+    const wrongPw = await c.login(A.users.admin.email, 'wrong-password-1');
+    expect(wrongSlug.status).toBe(401);
+    expect(wrongSlug.body).toEqual({ error: { ...wrongPw.body.error } });
+    await h.control.query(`UPDATE schools SET status = 'provisioning' WHERE id = $1`, [A.schoolId]);
+    expect((await c.login(A.users.admin.email)).status).toBe(401);
+    await h.control.query(`UPDATE schools SET status = 'active' WHERE id = $1`, [A.schoolId]);
+  });
+
+  it('idle sessions expire, and the session cap evicts the oldest', async () => {
+    const idle = await harness({ SESSION_IDLE_MINUTES: '5', MAX_SESSIONS_PER_USER: '2' });
+    try {
+      const S = await seed(idle, 'auth-idle');
+      const first = await loginAs(idle, S.users.admin.email);
+      await loginAs(idle, S.users.admin.email);
+      await loginAs(idle, S.users.admin.email);
+      expect((await first.get('/auth/me')).status).toBe(401); // evicted by the third login (cap 2)
+      const c = await loginAs(idle, S.users.teacher.email);
+      expect((await c.get('/auth/me')).status).toBe(200);
+      await idle.owner.query(`UPDATE sessions SET last_seen_at = now() - interval '6 minutes' WHERE user_id = $1`, [S.users.teacher.id]);
+      const r = await c.get('/auth/me');
+      expect(r.status).toBe(401);
+    } finally {
+      await idle.close();
+    }
+  });
+
+  it('change-password verifies the current password, applies immediately and revokes other sessions', async () => {
+    const a = await loginAs(h, A.users.guardian2.email);
+    const b = await loginAs(h, A.users.guardian2.email);
+    expect((await a.post('/auth/change-password', { current_password: 'wrong-wrong-1', new_password: 'another-long-password' })).status).toBe(403);
+    expect((await a.post('/auth/change-password', { current_password: PASSWORD, new_password: 'short' })).status).toBe(400);
+    expect((await a.post('/auth/change-password', { current_password: PASSWORD, new_password: 'another-long-password' })).status).toBe(200);
+    expect((await b.get('/auth/me')).status).toBe(401);
+    expect((await a.get('/auth/me')).status).toBe(200);
+    expect((await new Client(h.app).login(A.users.guardian2.email, PASSWORD)).status).toBe(401);
+    expect((await new Client(h.app).login(A.users.guardian2.email, 'another-long-password')).status).toBe(200);
   });
 });
 
@@ -144,7 +197,7 @@ describe('login rate limiting', () => {
     const lim = await harness({ LOGIN_RATE_LIMIT_PER_MINUTE: '3' });
     try {
       const codes: number[] = [];
-      for (let i = 0; i < 5; i++) codes.push((await new Client(lim.app).login('x@y.example.test', 'whatever-123')).status);
+      for (let i = 0; i < 5; i++) codes.push((await new Client(lim.app).login('xx@yy.example.test', 'whatever-123')).status);
       expect(codes.slice(0, 3)).toEqual([401, 401, 401]);
       expect(codes.slice(3)).toEqual([429, 429]);
     } finally {

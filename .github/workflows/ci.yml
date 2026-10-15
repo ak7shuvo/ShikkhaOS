@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# No secrets are used or needed. The token is read-only.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      # The destructive server tests only run against the throwaway PostgreSQL started below: it listens on loopback inside this
+      # runner, is created fresh for this run with random passwords, and carries the cluster marker the test guard demands
+      # (server/test/safety.ts). No external database URL is configured anywhere in this workflow, and the guard refuses
+      # non-loopback hosts, so CI cannot reach (or drop anything in) a developer, staging or production database.
+      PETRA_TEST_CLUSTER: disposable
+      PGPORT_TEST: '54329'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install PostgreSQL 16 client tools (pg_dump / pg_restore / psql)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-16
+          pg_dump --version
+
+      - run: npm ci
+
+      - name: Lint and format check
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Start a disposable PostgreSQL 16 with TLS (loopback only)
+        run: |
+          set -euo pipefail
+          certs="$RUNNER_TEMP/pg-certs"
+          scripts/ci/gen-test-certs.sh "$certs"
+          sudo chown 999:999 "$certs/server.key" "$certs/server.crt"
+          sudo chmod 600 "$certs/server.key"
+
+          suffix=$(openssl rand -hex 6)
+          pgpass=$(openssl rand -hex 24)
+          sharedpw=$(openssl rand -hex 24)
+          controlpw=$(openssl rand -hex 24)
+          clusterid="ci-$GITHUB_RUN_ID-$suffix"
+          echo "::add-mask::$pgpass"
+          echo "::add-mask::$sharedpw"
+          echo "::add-mask::$controlpw"
+
+          docker run -d --name petra-ci-pg \
+            -e POSTGRES_PASSWORD="$pgpass" \
+            -p 127.0.0.1:${PGPORT_TEST}:5432 \
+            -v "$certs:/certs:ro" \
+            postgres:16 \
+            -c ssl=on -c ssl_cert_file=/certs/server.crt -c ssl_key_file=/certs/server.key
+          for i in $(seq 1 60); do
+            PGPASSWORD="$pgpass" psql -h 127.0.0.1 -p "$PGPORT_TEST" -U postgres -d postgres -Atc 'select 1' >/dev/null 2>&1 && break
+            sleep 1
+          done
+          export PGPASSWORD="$pgpass"
+          psql -h 127.0.0.1 -p "$PGPORT_TEST" -U postgres -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE petra_disposable_test_cluster'
+          psql -h 127.0.0.1 -p "$PGPORT_TEST" -U postgres -d petra_disposable_test_cluster -v ON_ERROR_STOP=1 \
+            -c 'CREATE TABLE marker (cluster_id text NOT NULL)' \
+            -c "INSERT INTO marker VALUES ('$clusterid')"
+
+          base="postgres://%s@127.0.0.1:${PGPORT_TEST}/%s"
+          {
+            echo "PETRA_TEST_CLUSTER_ID=$clusterid"
+            echo "TEST_PROVISIONER_DATABASE_URL=$(printf "$base" "postgres:$pgpass" postgres)"
+            echo "TEST_DATABASE_URL=$(printf "$base" "shikkha_app:$sharedpw" shikkhaos_test)"
+            echo "TEST_MIGRATION_DATABASE_URL=$(printf "$base" "postgres:$pgpass" shikkhaos_test)"
+            echo "TEST_CONTROL_DATABASE_URL=$(printf "$base" "petra_control_app:$controlpw" petra_control_test)"
+            echo "TEST_CONTROL_MIGRATION_DATABASE_URL=$(printf "$base" "postgres:$pgpass" petra_control_test)"
+            echo "PETRA_TEST_TLS_CA=$certs/ca.crt"
+            echo "PETRA_TEST_TLS_UNTRUSTED_CA=$certs/untrusted-ca.crt"
+            echo "PETRA_MASTER_KEY=$(openssl rand -base64 32)"
+          } >> "$GITHUB_ENV"
+
+      - name: Server tests (real PostgreSQL, includes the TLS trusted-CA tests)
+        run: npm run test -w server
+
+      - name: Web tests
+        run: npm run test -w web
+
+      - name: Build
+        run: npm run build
+
+      - name: Stop the test database
+        if: always()
+        run: docker rm -f petra-ci-pg || true

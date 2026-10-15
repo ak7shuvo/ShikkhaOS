@@ -20,18 +20,36 @@ export interface SeededSchool {
  * all names are obviously fictional and no real student data is used.
  * Requires an owner/superuser connection (bypasses RLS by design).
  */
-export async function seedSchool(db: pg.Pool | pg.PoolClient, opts: { code: string; name: string; password: string }): Promise<SeededSchool> {
+export async function seedSchool(
+  db: pg.Pool | pg.PoolClient,
+  opts: {
+    code: string;
+    name: string;
+    password: string;
+    /** The schools row already exists (dedicated database provisioned with the registry id). */ existingSchoolId?: string;
+  },
+): Promise<SeededSchool> {
   const q = async <T = any>(sql: string, params: unknown[] = []): Promise<T[]> => (await db.query(sql, params)).rows as T[];
   const pw = await hashPassword(opts.password);
-  const school = (
-    await q(`INSERT INTO schools (code, name, name_bn, address) VALUES ($1,$2,$3,'Demo address, Demo City') RETURNING id`, [
-      opts.code,
-      opts.name,
-      `${opts.name} (বাংলা)`,
-    ])
-  )[0]!;
+  const school = opts.existingSchoolId
+    ? (
+        await q(`UPDATE schools SET name_bn = $2, address = 'Demo address, Demo City' WHERE id = $1 RETURNING id`, [
+          opts.existingSchoolId,
+          `${opts.name} (বাংলা)`,
+        ])
+      )[0]!
+    : (
+        await q(`INSERT INTO schools (code, name, name_bn, address) VALUES ($1,$2,$3,'Demo address, Demo City') RETURNING id`, [
+          opts.code,
+          opts.name,
+          `${opts.name} (বাংলা)`,
+        ])
+      )[0]!;
   const schoolId: string = school.id;
-  await q(`INSERT INTO school_licenses (school_id, plan, status, ends_on) VALUES ($1,'demo','active', current_date + 365)`, [schoolId]);
+  // Legacy table (Phase 1); subscriptions now live in the control plane. Kept only so Phase 1 schema invariants hold.
+  await q(`INSERT INTO school_licenses (school_id, plan, status, ends_on) VALUES ($1,'demo','active', current_date + 365) ON CONFLICT (school_id) DO NOTHING`, [
+    schoolId,
+  ]);
 
   const mk = async (key: string, role: string, name: string) => {
     const email = `${key}@${opts.code}.example.test`;

@@ -1,12 +1,12 @@
 # ShikkhaOS
 
-**School Management & Academic Information System** — a multi-tenant (many schools, one codebase and database) web platform with Bengali and English interfaces.
+**School Management & Academic Information System** — a commercial multi-school web platform by Petra Software Solution (one codebase; one dedicated database per school) with Bengali and English interfaces.
 
-> Status: **Phase 1 foundation.** Everything listed under "Implemented" exists and is covered by the tests described in [Test results](#test-results). Items under "Not implemented" are planned, not built. See [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md).
+> Status: **Phase 2 in progress (branch `feat/phase-2-db-per-school`) — not production-ready.** Phase 1 features below are preserved. Items under "Not implemented" are planned, not built; production blockers are listed in [docs/PHASE2_ARCHITECTURE.md](docs/PHASE2_ARCHITECTURE.md#status-and-remaining-blockers).
 
 ## Implemented
 
-- Multi-tenant core: schools (profile, logo URL, address, contact, settings), licence metadata, memberships, per-school isolation enforced by PostgreSQL row-level security **and** application checks.
+- Multi-tenant core: schools (profile, branding, settings), per-school accounts and memberships, isolation by **separate database + role per school** plus PostgreSQL row-level security inside each database and application checks. Subscription/licensing in a Petra control plane (Phase 2).
 - Authentication: email + password (argon2id), opaque server-side sessions in HttpOnly SameSite=Strict cookies, account lockout, login rate limiting.
 - Server-enforced RBAC with 7 roles (Platform Super Admin, School Admin, Principal/Management, Exam Controller, Teacher, Guardian, Student — _reserved: no permissions, not assignable_).
 - Academic data: academic years, classes, sections, subjects, students (permanent identity) with per-year enrolments, guardians with verified student links, teacher assignments.
@@ -16,53 +16,52 @@
 - Web UI (React): responsive shell, Bengali/English switcher, reusable form/table/status/loading/empty/error components.
 - SQL migrations, development seed, automated tests (see below).
 
-## Not implemented (Phase 2+)
+## Not implemented
 
-Android APK, desktop client, offline sync (designed only — see ARCHITECTURE), student portal, attendance, fees/payments, notifications, logo file upload (logo is a URL), password reset / email verification / MFA, per-school custom roles, PDF/Excel export, production deployment automation.
+EXE / Linux / Android builds (configuration generator only), offline sync (design only), payment gateway, student portal, attendance, fees, notifications, logo file upload (logo is a URL), password reset / e-mail verification / MFA, per-school custom roles, PDF/Excel export, production deployment automation, TLS/network/KMS configuration (documented requirements).
+
+## Phase 2: Petra multi-school platform (branch `feat/phase-2-db-per-school`)
+
+ShikkhaOS is a commercial product of Petra Software Solution. Each school has its own **database, database role, accounts, branding and subscription**; a control-plane database holds the school registry, subscriptions and Petra staff accounts. Read first: [docs/PHASE2_ARCHITECTURE.md](docs/PHASE2_ARCHITECTURE.md) (includes the Phase 1 audit, what is verified, and the **list of production blockers** — this is not production-ready), then [DATABASE_ISOLATION](docs/DATABASE_ISOLATION.md), [SCHOOL_PROVISIONING](docs/SCHOOL_PROVISIONING.md), [SUBSCRIPTIONS](docs/SUBSCRIPTIONS.md), [DEPLOYMENT](docs/DEPLOYMENT.md).
+
+Login now takes **school slug + email + password**. Petra staff use `/platform` (separate sign-in).
 
 ## Requirements
 
 - Node.js ≥ 20 (developed on 22), npm ≥ 10
-- PostgreSQL ≥ 14 (developed and tested on 16.15). Docker is **not** required; any reachable PostgreSQL works.
+- PostgreSQL ≥ 14 (developed and tested on 16.15) and the `pg_dump`/`pg_restore` client tools. Docker is **not** required.
+- An administrative PostgreSQL role allowed to create databases and roles (the "provisioner"), used only by the operator CLI and tests.
 
-## Setup
+## Setup (development)
 
 ```bash
 npm install
-cp .env.example .env          # then edit every CHANGE_ME / OWNER_* value
+cp .env.example .env                              # fill in every placeholder
+npm run petra -- generate-master-key              # paste into PETRA_MASTER_KEY
+createdb petra_control                            # as a PostgreSQL admin
+npm run control:setup && npm run control:migrate  # control-plane role + schema
+PLATFORM_ADMIN_EMAIL=ops@example.org PLATFORM_ADMIN_PASSWORD='…min 10 chars…' npm run petra -- platform-admin-create
+npm run petra -- seed-demo                        # OPTIONAL, development only: fictional demo school on its own database
 ```
 
-Create empty databases (owner role must be allowed to create roles; a local superuser is fine for development):
+New school (operator workflow, see [SCHOOL_PROVISIONING](docs/SCHOOL_PROVISIONING.md)):
 
 ```bash
-createdb shikkhaos_dev
-createdb shikkhaos_test       # disposable: its public schema is dropped & recreated by every test run
+npm run petra -- register greenfield "Greenfield School" admin@example.org "Admin Name"
+npm run petra -- provision greenfield             # creates database + role, prints the first admin password once
+npm run petra -- health greenfield
 ```
 
-Then:
-
-```bash
-npm run db:setup     # creates the restricted runtime role `shikkha_app` (NOSUPERUSER, NOBYPASSRLS)
-npm run db:migrate   # applies server/migrations/*.sql using MIGRATION_DATABASE_URL (owner)
-npm run db:seed      # OPTIONAL, development only: one fictional demo school
-```
-
-Seeded logins are `<role>@demo-school.example.test` with the password you set in `DEV_SEED_PASSWORD` (`admin`, `principal`, `controller`, `teacher`, `teacher2`, `guardian`, `guardian2`). The seed refuses to run with `NODE_ENV=production`.
-
-First platform administrator (no default account exists):
-
-```bash
-PLATFORM_ADMIN_EMAIL=you@example.org PLATFORM_ADMIN_PASSWORD='…min 10 chars…' npm run admin:create -w server
-```
+Demo logins (after `seed-demo`): school `demo-school`, e-mails `admin|principal|controller|teacher|teacher2|guardian|guardian2@demo-school.example.test`, password = `DEV_SEED_PASSWORD`.
 
 ## Run
 
 ```bash
 npm run dev:server   # API on http://127.0.0.1:3000
-npm run dev:web      # UI on http://localhost:5173 (proxies /api to the API)
+npm run dev:web      # UI on http://localhost:5173 (proxies /api); platform console at /platform
 ```
 
-Open `http://localhost:5173` (the origin must match `ALLOWED_ORIGINS`). Production: `npm run build`, then `npm start -w server`, and serve `web/dist` over HTTPS from the same site as `/api` (see [docs/SECURITY.md](docs/SECURITY.md)). The API does not serve the static UI itself.
+Open `http://localhost:5173` (the origin must match `ALLOWED_ORIGINS`). Production: `npm run build`, then `npm start -w server`, and serve `web/dist` over HTTPS from the same site as `/api` ([DEPLOYMENT](docs/DEPLOYMENT.md)).
 
 ## Quality commands
 
@@ -73,35 +72,37 @@ npm test            # vitest: server (needs PostgreSQL + TEST_* env) and web
 npm run build       # server (tsc) + web (vite)
 ```
 
-Server tests run against a **real PostgreSQL** through the restricted role, so row-level-security policies are exercised rather than mocked. `TEST_DATABASE_URL` and `TEST_MIGRATION_DATABASE_URL` (see `.env.example`) must point at a disposable database.
+Server tests run against a **real PostgreSQL** through restricted roles, so row-level-security policies and per-school database privileges are exercised rather than mocked. The test setup is **destructive** (it drops/recreates schemas and per-school databases) and refuses to start unless it can prove the target is a disposable test cluster: `PETRA_TEST_CLUSTER=disposable`, a matching cluster-marker database, loopback host, strictly test-named databases (see `.env.example` for the one-time preparation). Never point `TEST_*` at a development, staging or production cluster. The TLS tests (`server/test/tls.test.ts`) run only when `PETRA_TEST_TLS_CA` / `PETRA_TEST_TLS_UNTRUSTED_CA` are set (certificates from `scripts/ci/gen-test-certs.sh`, server with `ssl=on`); otherwise they are reported as skipped — except when `CI` is set, where missing or unreadable CA inputs fail the suite. `.github/workflows/ci.yml` runs lint, typecheck, server tests, web tests and build against a throw-away PostgreSQL 16 container bound to loopback with per-run random passwords and its own cluster marker; it contains no external database URL.
 
 ## Test results
 
-Last run in the development environment (PostgreSQL 16.15, Node 22.22):
+Last run in the development environment (PostgreSQL 16.15, Node 22.22), Phase 2 branch:
 
-| Check               | Result                                                           |
-| ------------------- | ---------------------------------------------------------------- |
-| `npm run lint`      | pass (eslint + prettier)                                         |
-| `npm run typecheck` | pass (server + web)                                              |
-| `npm test` (server) | 7 files, 80 tests passed                                         |
-| `npm test` (web)    | 1 file, 3 tests passed                                           |
-| `npm run build`     | pass (server `tsc`, web `vite build`)                            |
-| Manual smoke        | migrate → seed → API login/list via curl; Bengali UI in Chromium |
+| Check               | Result                                                                                                  |
+| ------------------- | ------------------------------------------------------------------------------------------------------- |
+| `npm run lint`      | pass (eslint + prettier)                                                                                |
+| `npm run typecheck` | pass (server + web)                                                                                     |
+| `npm test` (server) | 15 files, 188 tests passed (real PostgreSQL roles and per-school databases)                             |
+| `npm test` (web)    | 1 file, 3 tests passed                                                                                  |
+| `npm run build`     | pass (server `tsc`, web `vite build`)                                                                   |
+| Manual smoke        | control-plane setup, `seed-demo`, `health --all`, API login by slug, platform login, Chromium rendering |
 
-Not run: browser end-to-end tests of every UI form (UI behaviour beyond login + sheet list was not driven automatically).
+Not run / not verified: browser end-to-end tests of every UI form, TLS to PostgreSQL, `pg_hba`/firewall rules, a real reverse proxy, KMS, backups scheduling, EXE/Linux/APK builds. See the blockers in [docs/PHASE2_ARCHITECTURE.md](docs/PHASE2_ARCHITECTURE.md#status-and-remaining-blockers).
 
 ## Layout
 
 ```
 server/            Fastify + TypeScript API, SQL migrations, tests
-  migrations/      001_init.sql (schema, constraints, RLS, grants)
+  migrations/      school schema (applied per school database): 001_init.sql, 002_session_idle.sql
+  control-migrations/ Petra control plane schema
+  src/tenancy.ts, provisioning.ts, shared-migration.ts, operations.ts, entitlements.ts, secrets.ts
   src/routes/      auth, platform, school, academic, results, guardian
-  src/scripts/     db-setup, migrate, seed, create-platform-admin
+  src/scripts/     petra (operator CLI), control-setup, control-migrate, db-setup/migrate (legacy shared DB)
   test/            integration tests against real PostgreSQL
 web/               React + Vite + TypeScript UI (bn/en)
-docs/              ARCHITECTURE, SECURITY, DATABASE, IMPLEMENTATION_PLAN
+docs/              PHASE2_ARCHITECTURE, DATABASE_ISOLATION, SCHOOL_PROVISIONING, SUBSCRIPTIONS, DEPLOYMENT, SECURITY, ARCHITECTURE, DATABASE, IMPLEMENTATION_PLAN
 ```
 
 ## Documentation
 
-[Architecture](docs/ARCHITECTURE.md) · [Security](docs/SECURITY.md) · [Database](docs/DATABASE.md) · [Implementation plan & roadmap](docs/IMPLEMENTATION_PLAN.md)
+[Phase 2 architecture](docs/PHASE2_ARCHITECTURE.md) · [Database isolation](docs/DATABASE_ISOLATION.md) · [Provisioning](docs/SCHOOL_PROVISIONING.md) · [Subscriptions](docs/SUBSCRIPTIONS.md) · [Deployment](docs/DEPLOYMENT.md) · [Security](docs/SECURITY.md) · [Architecture (Phase 1)](docs/ARCHITECTURE.md) · [Database (school schema)](docs/DATABASE.md) · [Implementation plan & roadmap](docs/IMPLEMENTATION_PLAN.md)

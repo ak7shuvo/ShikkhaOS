@@ -15,12 +15,14 @@
     "dev:web": "npm run dev -w web",
     "db:setup": "npm run db:setup -w server",
     "db:migrate": "npm run db:migrate -w server",
-    "db:seed": "npm run db:seed -w server",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "typecheck": "npm run typecheck -w server && npm run typecheck -w web",
     "test": "npm run test -w server && npm run test -w web",
-    "build": "npm run build -w server && npm run build -w web"
+    "build": "npm run build -w server && npm run build -w web",
+    "control:setup": "npm run control:setup -w server",
+    "control:migrate": "npm run control:migrate -w server",
+    "petra": "npm run petra -w server --"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",

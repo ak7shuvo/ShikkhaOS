@@ -9,8 +9,11 @@ export class ApiError extends Error {
   }
 }
 
+// Browser builds use same-origin /api. Branded native clients (future) set VITE_API_BASE_URL at build time.
+const BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '';
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`/api${path}`, {
+  const res = await fetch(`${BASE}/api${path}`, {
     method,
     credentials: 'same-origin',
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
@@ -41,10 +44,27 @@ export interface Membership {
   role: string;
   school_name: string;
 }
+export interface Branding {
+  display_name: string;
+  logo_url: string | null;
+  primary_color: string;
+  accent_color: string;
+}
+export interface EntitlementInfo {
+  level: 'full' | 'grace' | 'read_only' | 'blocked';
+  status: string;
+  warning: { code: string; message: string } | null;
+  full_access_until: string;
+  read_only_until: string;
+  retention_until: string;
+}
 export interface Session {
-  user: { id: string; email: string; full_name: string; language: 'bn' | 'en'; is_platform_admin: boolean };
+  user: { id: string; email: string; full_name: string; language: 'bn' | 'en' };
+  school: { id: string; slug: string; name: string };
   active_school_id: string | null;
   roles: string[];
   permissions: string[];
   memberships: Membership[];
+  entitlement: EntitlementInfo;
+  branding: Branding | null;
 }

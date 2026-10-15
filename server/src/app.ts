@@ -1,35 +1,80 @@
 import cookie from '@fastify/cookie';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import type { Config } from './config.js';
-import { SESSION_COOKIE, type AppDeps } from './context.js';
+import type { AppDeps } from './context.js';
+import { SESSION_COOKIE } from './context.js';
 import type { Db } from './db.js';
+import { EntitlementService } from './entitlement-service.js';
 import { AppError } from './errors.js';
-import { loadRolePermissions } from './rbac.js';
+import { loadRolePermissions, type RolePermissionMap } from './rbac.js';
 import { academicRoutes } from './routes/academic.js';
 import { authRoutes } from './routes/auth.js';
 import { guardianRoutes } from './routes/guardian.js';
 import { platformRoutes } from './routes/platform.js';
+import { publicRoutes } from './routes/public.js';
 import { resultRoutes } from './routes/results.js';
 import { schoolRoutes } from './routes/school.js';
+import { TenantRouter, TenantUnavailableError } from './tenancy.js';
+import { SecretBox, loadMasterKeys } from './secrets.js';
+import { tlsOptions } from './tls.js';
 
-export async function buildApp(config: Config, pool: Db): Promise<FastifyInstance> {
-  const app = Fastify({
+/** Trust exactly `n` proxies counted from the TCP peer: the first address beyond them is the client. */
+const hops = (n: number) => (_addr: string, i: number) => i < n;
+
+export interface AppOptions {
+  /** Pool for the legacy shared school database; only needed while a school has db_mode='shared'. */
+  sharedPool?: Db;
+  now?: () => Date;
+}
+
+export async function buildApp(config: Config, control: Db, opts: AppOptions = {}): Promise<FastifyInstance> {
+  const serverOptions: FastifyServerOptions = {
     // Never log bodies, cookies or auth headers.
     logger: config.NODE_ENV === 'test' ? false : { level: 'info', redact: ['req.headers.cookie', 'req.headers.authorization'] },
-    trustProxy: false,
+    // Only honour X-Forwarded-* from explicitly trusted proxies (TRUST_PROXY); default is the TCP peer.
+    trustProxy: typeof config.TRUST_PROXY === 'number' ? hops(config.TRUST_PROXY) : config.TRUST_PROXY,
     bodyLimit: 1_000_000,
+  };
+  const app = Fastify(serverOptions);
+  const now = opts.now ?? (() => new Date());
+  const secrets = new SecretBox(loadMasterKeys(config));
+  const router = new TenantRouter(control, secrets, {
+    sharedPool: opts.sharedPool,
+    maxPools: config.MAX_SCHOOL_POOLS,
+    poolMax: config.SCHOOL_POOL_MAX,
+    cacheMs: config.ENTITLEMENT_CACHE_SECONDS * 1000,
+    ssl: tlsOptions(config.SCHOOL_DB_SSL, config.DB_SSL_CA_FILE),
   });
-  const deps: AppDeps = { config, pool, rolePermissions: await loadRolePermissions(pool) };
+  const entitlements = new EntitlementService(control, { cacheMs: config.ENTITLEMENT_CACHE_SECONDS * 1000, timezone: config.BILLING_TIMEZONE, now });
+  const rpCache = new Map<string, RolePermissionMap>();
+  const deps: AppDeps = {
+    config,
+    control,
+    router,
+    entitlements,
+    now,
+    rolePermissions: async (entry, pool) => {
+      const key = `${entry.id}:${entry.schema_version}`;
+      let m = rpCache.get(key);
+      if (!m) {
+        m = await loadRolePermissions(pool);
+        rpCache.set(key, m);
+      }
+      return m;
+    },
+  };
   app.decorate('deps', deps);
   app.decorateRequest('auth', null);
+  app.decorateRequest('platformAuth', null);
+  app.addHook('onClose', async () => router.close());
 
   await app.register(helmet, { contentSecurityPolicy: false });
   await app.register(cookie);
   await app.register(rateLimit, { global: true, max: config.API_RATE_LIMIT_PER_MINUTE, timeWindow: '1 minute' });
 
-  // CSRF defence: SameSite=Strict cookie + reject unsafe requests from foreign origins.
+  // CSRF defence: SameSite=Strict cookie + reject unsafe-method requests from foreign origins.
   app.addHook('onRequest', async (req) => {
     if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return;
     const origin = req.headers.origin;
@@ -42,6 +87,11 @@ export async function buildApp(config: Config, pool: Db): Promise<FastifyInstanc
   app.setErrorHandler((err: Error & { statusCode?: number; validation?: unknown }, req, reply) => {
     if (err instanceof AppError) {
       return reply.status(err.status).send({ error: { code: err.code, message: err.message, details: err.details } });
+    }
+    if (err instanceof TenantUnavailableError) {
+      const status = err.code === 'SCHOOL_SUSPENDED' || err.code === 'SCHOOL_OFFBOARDED' ? 403 : 503;
+      if (status === 503) req.log.error({ code: err.code }, 'tenant unavailable');
+      return reply.status(status).send({ error: { code: err.code, message: err.message } });
     }
     if (err.statusCode === 429) return reply.status(429).send({ error: { code: 'RATE_LIMITED', message: 'Too many requests' } });
     if (err.statusCode && err.statusCode < 500) {
@@ -62,6 +112,7 @@ export async function buildApp(config: Config, pool: Db): Promise<FastifyInstanc
   app.get('/api/health', async () => ({ status: 'ok' }));
   await app.register(authRoutes, { prefix: '/api' });
   await app.register(platformRoutes, { prefix: '/api' });
+  await app.register(publicRoutes, { prefix: '/api' });
   await app.register(schoolRoutes, { prefix: '/api' });
   await app.register(academicRoutes, { prefix: '/api' });
   await app.register(resultRoutes, { prefix: '/api' });

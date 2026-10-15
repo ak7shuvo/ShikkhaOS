@@ -1,81 +1,90 @@
 # Security
 
-Describes what is implemented. Unimplemented items are listed under [Known limitations](#known-limitations).
+Describes what is implemented on branch `feat/phase-2-db-per-school`. Unimplemented or unverified items are in [Known limitations and production blockers](#known-limitations-and-production-blockers). Test evidence: 188 server tests (real PostgreSQL roles/databases) and 3 web tests passed in the development environment; this does not by itself establish production readiness.
+
+## Trust boundaries
+
+| Boundary                        | Enforced by                                                                                                                                          |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| School ↔ school                 | Separate database + separate credentials per school (registry-routed), RLS and composite FKs inside each database, per-school accounts and sessions  |
+| School users ↔ Petra staff      | Different stores (school DB vs control plane), different cookies (`sid` vs `psid`, path `/api/platform`), platform API never uses school credentials |
+| API ↔ privileged DB operations  | The API has no CREATEDB/CREATEROLE credential; provisioning/migration/export/offboarding run from the operator CLI with `PROVISIONER_DATABASE_URL`   |
+| Client input ↔ tenant selection | Tenant comes from the registry row of the authenticated session; slugs only look rows up                                                             |
+
+See [DATABASE_ISOLATION.md](DATABASE_ISOLATION.md) for roles, secrets and the network requirements.
 
 ## Authentication
 
-- Email + password managed by the application. Hashes: **argon2id** (`@node-rs/argon2` defaults). Minimum length 10 for passwords set through the API.
-- `POST /api/auth/login` sets cookie `sid`: random 256-bit token, `HttpOnly`, `SameSite=Strict`, `Secure` (default on in production; production refuses `COOKIE_SECURE=false`). Only the SHA-256 hash of the token is stored (`sessions.token_hash`). TTL `SESSION_TTL_HOURS` (default 12). Logout deletes the session row.
-- Identical `401 INVALID_CREDENTIALS` for unknown email, wrong password, disabled and locked accounts; an Argon2 verification is still burned for unknown emails (timing equalisation).
-- **Rate limiting:** `@fastify/rate-limit` — `LOGIN_RATE_LIMIT_PER_MINUTE` (default 10) per IP on login, `API_RATE_LIMIT_PER_MINUTE` globally. In-memory per process: behind several instances or a proxy, use a shared store and set `trustProxy` correctly (not configured yet).
-- **Account lockout:** `LOGIN_MAX_FAILURES` (default 5) consecutive failures lock the account for `LOGIN_LOCK_MINUTES` (default 15); success resets the counter. (A lockout can be used to deny service to a known email; accepted trade-off for Phase 1.)
-- Secrets: nothing is hardcoded. All configuration is validated at startup with zod (`server/src/config.ts`). `.env` is git-ignored; `.env.example` has placeholders only. No default users exist; demo users exist only when `db:seed` is run (refused in production) and use `DEV_SEED_PASSWORD` from your environment.
-- Logging: request bodies, cookies and `Authorization` are never logged (redacted). Passwords are only held in memory during hashing; audit metadata contains no credentials (tested).
+- Per-school accounts: `POST /api/auth/login` `{school, email, password}`. Passwords: **argon2id** (`@node-rs/argon2` defaults), minimum 10 characters when set through the API. Unknown school, unready school, unknown e-mail, wrong password, disabled and locked accounts all return the identical `401 INVALID_CREDENTIALS`, with an Argon2 verification burned for unknown users (timing equalisation). A blocked subscription or suspended school is revealed **only after** the credentials verified.
+- Cookie `sid=<school id>.<256-bit random token>`: `HttpOnly`, `SameSite=Strict`, `Secure` (default in production; production refuses `COOKIE_SECURE=false`). Only the SHA-256 of the token is stored, in the school's own database. The school id prefix is a routing hint: the session must exist in that school's database **and** its `active_school_id` must equal the registry id (forged prefixes tested).
+- Sessions: absolute TTL `SESSION_TTL_HOURS` (12), **idle timeout** `SESSION_IDLE_MINUTES` (120), at most `MAX_SESSIONS_PER_USER` (5; oldest evicted), logout deletes the row, `POST /api/auth/change-password` verifies the current password and revokes all other sessions. Membership/user/school/subscription changes take effect on the next request (subject to the registry cache TTL across instances).
+- **Rate limiting:** `@fastify/rate-limit` per client IP: `LOGIN_RATE_LIMIT_PER_MINUTE` (10) on login endpoints, `API_RATE_LIMIT_PER_MINUTE` globally, 60/min on public endpoints. **Trusted proxy:** `TRUST_PROXY` empty means `X-Forwarded-For` is ignored (a spoofed header cannot evade limits — tested); a number trusts exactly that many proxy hops from the TCP peer; otherwise a list of proxy IPs/CIDRs. Counters are in process memory.
+- **Lockout:** `LOGIN_MAX_FAILURES` (5) consecutive failures lock the account for `LOGIN_LOCK_MINUTES` (15), per school database / control plane.
+- Platform admins: control-plane accounts with the same hashing, lockout, idle/absolute timeouts and session cap; separate cookie scoped to `/api/platform`.
+- Secrets: nothing hard-coded; configuration validated at startup. Per-school database passwords are random 256-bit, stored AES-256-GCM encrypted (school id as AAD) with `PETRA_MASTER_KEY` from the environment. Logs redact cookies and authorization headers; request bodies are never logged; passwords never appear in responses or audit metadata (tested). Provisioning errors are sanitised (the credential is redacted).
 
 ## CSRF / browser hardening
 
-`SameSite=Strict` cookie, plus a server check that rejects non-GET requests whose `Origin` is not in `ALLOWED_ORIGINS`. `@fastify/helmet` headers (CSP disabled for now because the API serves JSON only; set a CSP on whatever serves `web/dist`). API responses carry `Cache-Control: no-store`.
+`SameSite=Strict` cookies, plus rejection of non-GET requests whose `Origin` is not in `ALLOWED_ORIGINS`. `@fastify/helmet` headers (CSP disabled for the JSON API; set one on the static host). Responses under `/api` carry `Cache-Control: no-store`.
 
 ## Authorization
 
-Every protected route uses the `authz()` preHandler (server-side): valid session → active school derived from memberships → school `active` → licence `trial|active` and not past `ends_on` → required permissions. Missing session → 401; missing permission → 403; no school selected → 409 `SCHOOL_CONTEXT_REQUIRED`.
+Every school route runs `authz()`: valid session in the registry-resolved school → school status (`active`) → **subscription entitlement** (`blocked` → 403, `read_only` → non-GET 403) → required permissions. Roles and permissions are unchanged from Phase 1 (teacher assignment checks, self-review ban, 404 instead of 403 for unassigned sheets, guardian verified-link restriction, reserved Student role). Platform routes require a platform session and nothing else.
 
-### Roles and permission boundaries
+### Roles and permission boundaries (school scope)
 
-| Role (scope)                    | Permissions                                                                                                                         |
-| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| Platform Super Admin (platform) | `platform.schools.manage`, `platform.licenses.manage`. **No** school data access. Not a membership role.                            |
-| School Admin                    | school.view/manage, members.manage, academic.view/manage, students.view, exams.manage, result.view, audit.view                      |
-| Principal / Management          | school.view, academic.view, students.view, result.view, **result.review, result.publish, result.correct**, audit.view               |
-| Exam Controller                 | school.view, academic.view, students.view, exams.manage, result.view, **result.review, result.publish, result.correct**             |
-| Teacher                         | school.view, academic.view, **marks.enter, result.submit** — effective only for sheets matching an active `teacher_assignments` row |
-| Guardian                        | `guardian.portal` — only students with a **verified** link to their own guardian profile                                            |
-| Student (reserved)              | none; cannot be assigned through the API; no student endpoints                                                                      |
+| Role                   | Permissions                                                                                                                 |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| School Admin           | school.view/manage, members.manage, academic.view/manage, students.view, exams.manage, result.view, audit.view              |
+| Principal / Management | school.view, academic.view, students.view, result.view, **result.review, result.publish, result.correct**, audit.view       |
+| Exam Controller        | school.view, academic.view, students.view, exams.manage, result.view, **result.review, result.publish, result.correct**     |
+| Teacher                | school.view, academic.view, **marks.enter, result.submit** — only for sheets matching an active `teacher_assignments` row   |
+| Guardian               | `guardian.portal` — only students with a **verified** link to their own guardian profile                                    |
+| Student (reserved)     | none; cannot be assigned; no endpoints                                                                                      |
+| Platform Super Admin   | not a school role; the control-plane API only (`/api/platform/*`) — no access to any school's academic data through the API |
 
-Additional rules enforced in code:
+## Tenant isolation (layers)
 
-- Teacher access to a sheet requires an assignment for the same academic year, class, subject and (section or all sections). Sheets a teacher is not assigned to return **404**, not 403 (no existence oracle).
-- A submitter cannot start review, approve or return their own submission (`SELF_REVIEW`).
-- School admins can create accounts but cannot assign `student` or `platform_super_admin`.
-- Platform admins cannot switch into a school and receive 409 on every school route.
+1. **Separate database and role per school**; the registry row selects the pool; first connect verifies database/role identity and that the role is unprivileged.
+2. Authentication is evaluated **inside** the school database; tokens are not portable across schools.
+3. Phase 1 layers inside each school database: application predicates, RLS on `school_id`, composite FKs, immutability/append-only triggers.
+4. Startup guard: API refuses to start if the control or shared role is a superuser or bypasses RLS.
+5. `SECURITY DEFINER` functions (`auth_user_by_email`, `auth_session_by_hash`) expose fixed column lists and pin `search_path`.
 
-## Tenant isolation
-
-Layers, from outermost to innermost:
-
-1. **Context from the server.** Active school = validated membership; never a client parameter.
-2. **Application predicates.** Queries filter on `school_id` and verify related ids (e.g. enrollment ∈ sheet's section, class ↔ section) with explicit errors.
-3. **PostgreSQL row-level security** (`FORCE` is not used; the API connects as `shikkha_app`, which is not the table owner). Every school-owned table has `USING/WITH CHECK (school_id = app_school_id())`. `app_school_id()` reads the transaction-local `app.school_id`. With no context, tables return zero rows. `schools`, `school_memberships`, `users`, `sessions`, `school_licenses`, `audit_events` have specific policies (see [DATABASE.md](DATABASE.md#row-level-security)).
-4. **Composite foreign keys** `(school_id, id)` make cross-school references impossible even for privileged writers.
-5. **Startup guard:** the API refuses to start if its DB role is a superuser or has `BYPASSRLS`.
-
-`SECURITY DEFINER` functions (`auth_user_by_email`, `auth_session_by_hash`) exist only so authentication can run before a user context exists; they expose a fixed column list and have `search_path` pinned.
-
-### What the tests prove
-
-`server/test/rls.test.ts` (real policies via the restricted role): no context → no rows; school A context cannot read/update/insert school B rows; cross-school FK blocked; school context cannot create platform admins or schools; platform context sees schools but zero tenant rows; context does not leak across pooled connections.
-`server/test/tenant.test.ts`: with real School B record IDs, a School A user gets 404/400/409 and nothing changes on read, marks write, workflow transition, enrollment, exam, guardian link, membership and teacher assignment endpoints; a client-supplied `school_id` (body/query/header) is ignored or rejected.
+What the tests prove: school A's PostgreSQL role cannot connect to school B's database and vice versa, cannot create databases/roles/tables, and writes land only in its own database (`provisioning.test.ts`); API-level cross-school login, cookie forgery and identifier-injection attempts fail and the workflow/guardian rules hold on dedicated databases (`dedicated.test.ts`); the Phase 1 RLS and IDOR suites still pass in shared mode (`rls.test.ts`, `tenant.test.ts`).
 
 ## Results integrity
 
-- Transitions are checked against a fixed table (`workflow.ts`); anything else is `409 INVALID_TRANSITION`.
-- Every transition runs in one transaction holding a row lock (`SELECT … FOR UPDATE`) on the sheet, so concurrent identical requests produce exactly one success (tested with parallel submit/publish).
-- `marks_guard` trigger: marks cannot change unless the sheet is `draft`/`returned`, and cannot exceed the exam maximum — enforced even for the table owner.
-- `published_results` rows are immutable except `superseded_at`; `result_events`, `result_versions`, `audit_events` are append-only (triggers; the app role also has no UPDATE/DELETE grant on them).
-- Corrections: only `result.correct` holders, reason mandatory; the sheet starts a new revision, guardians keep seeing the previously published revision until the corrected one is published, and old revisions are retained.
+Unchanged from Phase 1 and carried into every dedicated database (also by the shared→dedicated copy, which preserves history and re-enables the guard trigger): fixed transition table, row-locked transactions (parallel submit/publish → exactly one success), `marks_guard` trigger, immutable `published_results` rows, append-only `result_events`/`result_versions`/`audit_events`, explicit corrections with reasons and new revisions.
+
+## Audit logging
+
+- School audit (`audit_events`, in each school database): school actions, including login, password change, export, branding.
+- **Platform audit** (`platform_audit_events`, control plane, append-only for the app role): platform login, school registration/provisioning/status changes, subscription events, payments, branding, releases, build profiles, credential rotation, export, offboarding, shared→dedicated migration and rollback.
+- Audit metadata never contains passwords, tokens or credentials.
+
+## Subscription and data-protection controls
+
+Entitlements are enforced server-side on every request (see [SUBSCRIPTIONS.md](SUBSCRIPTIONS.md)). Expiry never deletes data; deletion only through the explicit, retention-gated, confirmed offboarding procedure with a restore-verified export.
 
 ## Dependencies
 
-Minimal runtime dependencies: `fastify`, `@fastify/cookie`, `@fastify/helmet`, `@fastify/rate-limit`, `@node-rs/argon2`, `pg`, `zod`; web: `react`, `react-dom`, `react-router-dom`. `npm audit --omit=dev` reports 0 vulnerabilities at the time of writing (react-router-dom 7.x). `npm audit` including dev tooling still reports moderate advisories in vitest/esbuild/vite dev servers (development only; upgrade to vitest 4+/vite 6+ in Phase 2). Re-run it for current state.
+Runtime: `fastify`, `@fastify/cookie`, `@fastify/helmet`, `@fastify/rate-limit`, `@node-rs/argon2`, `pg`, `zod`; web: `react`, `react-dom`, `react-router-dom`. No new runtime dependency was added in Phase 2. `npm audit --omit=dev` reports 0 vulnerabilities at the time of writing (run it again before release). Dev tooling (vitest/vite/esbuild dev servers) has known moderate advisories that affect development machines only.
 
-## Known limitations
+## Known limitations and production blockers
 
-- No password reset, email verification, MFA or "change password" endpoint yet. Initial passwords set by an admin are the user's real password until a change flow exists.
-- Rate limiting is per-process memory; `trustProxy` is off (client IP behind a proxy would be the proxy). Configure before deploying behind a load balancer.
-- Account existence can be inferred by an admin creating a member with a duplicate email (409).
-- Student/guardian personal data is stored unencrypted at the application level (disk/DB encryption is the deployer's responsibility); no data-retention or export/erase tooling.
-- The guardian-only restriction is enforced in the API queries (verified link join), not by a dedicated RLS policy.
-- The licence check performs one extra query per request.
-- Audit log has no UI filters/pagination beyond the latest 100 events.
-- No automated penetration test or dependency-review pipeline; no CI configured in this repository.
-- Production topology (TLS termination, same-site hosting of UI and API, backups) is documented only as requirements, not automated.
+Do not treat local test results as production readiness. Open items:
+
+1. **TLS** to PostgreSQL: `CONTROL_DB_SSL` / `SCHOOL_DB_SSL` (+ optional `DB_SSL_CA_FILE`) enable verified TLS (certificate and host name) for the control, shared and school pools; trusted-CA success and untrusted-CA failure are covered by `tls.test.ts` against a disposable TLS server (skipped, and reported as skipped, when the CA material is not configured). The default is still plaintext, and the production certificate chain, `hostssl` `pg_hba` rules and libpq settings for operator tools are **not verified**. **Network restriction** (`pg_hba`, firewall, private listen address) is documented only. `CONNECT` on the control, shared, maintenance and school databases **is** restricted and tested (DATABASE_ISOLATION.md), but a cluster owner must run `harden-db-access` once; databases created later by other tools start open.
+2. **Master key** is an environment variable: no KMS/HSM, no automated recovery. Any reader of the API process environment can decrypt all school credentials. The control-plane role can read/update registry rows (including encrypted credentials).
+3. **Platform admins** have no MFA, password reset or change flow, and no IP allow-list; a compromised platform admin can suspend/activate schools and rewrite branding and subscription data.
+4. **Trusted proxy** logic is verified only with simulated headers; **rate limiting** is per-process memory (not shared across instances); no CAPTCHA/IP reputation.
+5. **Registry/entitlement cache** (default 10 s) delays suspension propagation across multiple API instances; maintenance mode waits `ENTITLEMENT_CACHE_SECONDS + 2` s in the CLI.
+6. **Backups**: no scheduling, no off-host storage, **dumps and exports are unencrypted** (file mode 0600 only), no tested RPO/RTO. The offboarding export contains personal data. Manifests carry row counts and content digests and can be HMAC-signed with `PETRA_BACKUP_SIGNING_KEY` (shared-secret: tamper-_evident_ only against someone without the key, no non-repudiation; unsigned manifests are **not** tamper-proof). The key is an environment variable, like the master key.
+7. **No password reset / e-mail verification / MFA for school users**; the first admin password is handed over by an operator. School admins can create accounts with a chosen initial password.
+8. Lockout enables targeted denial of service against a known e-mail/school (accepted trade-off).
+9. **Shared mode** still exists (migration/rollback path) and relies on Phase 1 RLS-only isolation for those schools; Phase 1's `school_licenses` table is unused legacy.
+10. The guardian restriction is enforced in API queries (verified-link join), not by an extra RLS policy.
+11. Cookie `SameSite=Strict` requires same-site hosting; native clients need a token mode (not implemented). No CSP is set by the API.
+12. Search/log/metrics pipeline, intrusion detection, dependency scanning and an independent security review/penetration test are absent. A minimal CI workflow (lint, typecheck, server and web tests, build) exists in `.github/workflows/ci.yml`; it has not been run on GitHub from this environment. Logging of connection failures is minimal by design (no secrets), which also limits diagnosability.
+13. Legal retention/deletion obligations (including for children's data) have not been reviewed.

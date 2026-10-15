@@ -1,5 +1,7 @@
 # Architecture
 
+> **Phase 2 update:** the single shared database, global accounts, school switching (`POST /auth/switch-school`, **removed**: the route no longer exists and a session belongs to exactly one school) and the in-database platform scope described in the Phase 1 sections below were replaced on branch `feat/phase-2-db-per-school` by a control plane + database-per-school model. Read [PHASE2_ARCHITECTURE.md](PHASE2_ARCHITECTURE.md) first; sections here that mention `DATABASE_URL`, shared-database RLS as the only tenant boundary, school switching, or `school_licenses` describe the Phase 1 design (still present only as the legacy `shared` mode). Frontend, result workflow, grading and the offline design notes remain accurate.
+
 ## Stack (what actually exists)
 
 | Layer     | Choice                                               | Why / trade-off                                                                                                                                   |
@@ -32,7 +34,7 @@ One backend and one database serve all schools. A school is a row in `schools`; 
 
 ### Tenant context
 
-The school comes only from `sessions.active_school_id`, which can only be set to a school where the user holds an active membership (`/auth/switch-school` validates it, and `authenticate` re-validates on every request). No endpoint accepts a `school_id` as authority; a client-sent one is ignored or rejected by strict schemas (tested).
+The school comes only from `sessions.active_school_id`, which can only be set to a school where the user holds an active membership (Phase 1 only: `POST /auth/switch-school` validated it — **that endpoint was removed in Phase 2** and must not be relied on; `authenticate` re-validates on every request). No endpoint accepts a `school_id` as authority; a client-sent one is ignored or rejected by strict schemas (tested).
 
 ### Platform vs school scope
 

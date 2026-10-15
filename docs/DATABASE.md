@@ -1,15 +1,19 @@
 # Database
 
-PostgreSQL ≥ 14 (tested on 16). Schema in `server/migrations/001_init.sql`; applied by `npm run db:migrate` (tracks applied files in `schema_migrations`, advisory-locked, each file in one transaction).
+> **Phase 2 update:** this document describes the school schema (`server/migrations`), which is now applied **per school database** (see [DATABASE_ISOLATION.md](DATABASE_ISOLATION.md) and [SCHOOL_PROVISIONING.md](SCHOOL_PROVISIONING.md)); platform data (registry, subscriptions, platform admins) lives in a separate control-plane schema (`server/control-migrations`, described in [PHASE2_ARCHITECTURE.md](PHASE2_ARCHITECTURE.md#3-control-plane)). Migration `002_session_idle.sql` adds `last_seen_at` to `auth_session_by_hash()`. The roles table below refers to the legacy shared setup (`shikkha_app`); dedicated schools use `sk_<id>_app`. `school_licenses` and `users.is_platform_admin` are legacy and unused in dedicated databases.
+
+PostgreSQL ≥ 14 (tested on 16). Schema in `server/migrations/*.sql` (`001_init.sql`, `002_session_idle.sql`). Each school's dedicated database is created and migrated by the operator CLI: `npm run petra -- provision <slug>` (new school) and `npm run petra -- migrate <slug|--all>` (pending migrations). `npm run db:migrate` applies the same files to the **legacy shared database only** (needs `MIGRATION_DATABASE_URL`). Applied files are tracked in `schema_migrations`; the runner is advisory-locked and applies each file in one transaction.
 
 ## Roles
 
-| Role                             | Used by                                                            | Notes                                                                                                                          |
-| -------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
-| owner (`MIGRATION_DATABASE_URL`) | `db:setup`, `db:migrate`, `db:seed`, `admin:create`, test fixtures | Owns tables; bypasses RLS. **Never** used by the API.                                                                          |
-| `shikkha_app` (`DATABASE_URL`)   | API                                                                | `NOSUPERUSER NOBYPASSRLS`, not owner, least-privilege grants (no DELETE except `sessions`; INSERT-only on append-only tables). |
+| Role                                                               | Used by                                                         | Notes                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------ | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sk_<id>_app` (one per school; password encrypted in the registry) | API, for that school's database only                            | `NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE`, `CONNECT` on its own database, same least-privilege table grants as below (no DELETE except `sessions`; INSERT-only on append-only tables). Created by `petra provision`. |
+| provisioner (`PROVISIONER_DATABASE_URL`)                           | operator CLI only (`petra provision/migrate/export/offboard-*`) | Privileged (`CREATEDB`/`CREATEROLE`); owns the school databases and bypasses RLS. **Never** configured in the API process.                                                                                                   |
+| `petra_control_app` (`CONTROL_DATABASE_URL`)                       | API, control-plane database                                     | See [PHASE2_ARCHITECTURE.md](PHASE2_ARCHITECTURE.md#3-control-plane).                                                                                                                                                        |
+| `shikkha_app` (`SHARED_DATABASE_URL`)                              | API, legacy shared database only                                | Phase 1 role, used only while a school is `db_mode='shared'`. Created by `npm run db:setup` (needs `APP_DB_PASSWORD`).                                                                                                       |
 
-`npm run db:setup` creates/updates `shikkha_app` with `APP_DB_PASSWORD`. Initialisation order: create database → `db:setup` → `db:migrate` → (dev only) `db:seed`.
+Initialisation order (development): create `petra_control` → `npm run control:setup` → `npm run control:migrate` → `npm run petra -- register …` / `provision …` (or `npm run petra -- seed-demo`). See [SCHOOL_PROVISIONING.md](SCHOOL_PROVISIONING.md). The legacy shared database additionally needs `npm run db:setup` and `npm run db:migrate`.
 
 ## Tables
 
@@ -54,8 +58,8 @@ Rules: `returned` sheets are editable again and re-submittable; `submit` require
 
 ## Seed data
 
-`db:seed` (owner connection, dev only) creates `demo-school` with fictional names, example.test emails, one year, Class 6 (sections A/B), 3 subjects, 4 students, 2 guardians with verified links, 2 teachers, a development-sample grading policy and one exam. Tests create their own schools through the same `seedSchool` function with unique codes.
+`npm run petra -- seed-demo` (development only; refused when `NODE_ENV=production`; needs `DEV_SEED_PASSWORD`) registers and provisions `demo-school` on its own database and seeds fictional data: example.test e-mails, one year, Class 6 (sections A/B), 3 subjects, 4 students, 2 guardians with verified links, 2 teachers, a development-sample grading policy and one exam. Tests create their own schools through the same `seedSchool` function with unique codes.
 
 ## Backups / ops
 
-Not automated. Back up the whole database (RLS does not apply to `pg_dump` run by the owner). Rotate the `shikkha_app` password by re-running `db:setup` and updating `DATABASE_URL`.
+Per-school export, restore-verification and offboarding procedures are operator commands (`petra export`, `petra restore`, `petra offboard-*`); see [SCHOOL_PROVISIONING.md](SCHOOL_PROVISIONING.md#backup-restore-and-export). They are **not scheduled or encrypted** and `pg_dump` run by the privileged role bypasses RLS. Rotate a school's database credential with `petra rotate-secret <slug>`; for the legacy shared role, re-run `npm run db:setup` and update `SHARED_DATABASE_URL`.

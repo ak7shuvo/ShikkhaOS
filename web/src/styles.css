@@ -274,6 +274,10 @@ td input {
   align-items: center;
   gap: 0.5rem;
 }
+.banner-warn {
+  background: #fff1cc;
+  color: #5a3f00;
+}
 .banner-error {
   background: var(--err-bg);
   color: #6e1510;

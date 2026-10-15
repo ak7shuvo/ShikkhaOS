@@ -16,8 +16,8 @@ export interface DbContext {
   sessionHash?: string;
 }
 
-export function createPool(url: string): Db {
-  return new pg.Pool({ connectionString: url, max: 10 });
+export function createPool(url: string, ssl: false | pg.PoolConfig['ssl'] = false): Db {
+  return new pg.Pool({ connectionString: url, max: 10, ...(ssl ? { ssl } : {}) });
 }
 
 /**
