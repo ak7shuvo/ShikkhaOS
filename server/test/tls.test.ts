@@ -30,13 +30,22 @@ describe('tlsOptions (always runs)', () => {
 /**
  * Trusted-CA integration tests. They need a disposable PostgreSQL with `ssl=on` and a server certificate (localhost/127.0.0.1)
  * signed by PETRA_TEST_TLS_CA, plus an unrelated CA in PETRA_TEST_TLS_UNTRUSTED_CA. scripts/ci/gen-test-certs.sh creates the
- * material; the CI workflow starts such a server. Without these variables the tests are SKIPPED (reported as skipped, never as passed).
+ * material; the CI workflow starts such a server. Locally, without these variables the tests are SKIPPED (reported as skipped, never as
+ * passed). When CI is set they are REQUIRED: missing or unreadable CA inputs fail the suite instead of skipping it.
  */
-describe.skipIf(!TRUSTED || !UNTRUSTED)('database TLS with certificate verification', () => {
+const IN_CI = Boolean(process.env.CI) && process.env.CI !== 'false' && process.env.CI !== '0';
+describe.skipIf(!IN_CI && (!TRUSTED || !UNTRUSTED))('database TLS with certificate verification', () => {
   let f: ControlFixture;
   const controlUrl = () => process.env.TEST_CONTROL_DATABASE_URL!;
 
   beforeAll(async () => {
+    for (const [name, file] of [
+      ['PETRA_TEST_TLS_CA', TRUSTED],
+      ['PETRA_TEST_TLS_UNTRUSTED_CA', UNTRUSTED],
+    ] as const) {
+      if (!file) throw new Error(`CI requires ${name} (generate with scripts/ci/gen-test-certs.sh); refusing to skip the TLS integration tests`);
+      if (!fs.existsSync(file)) throw new Error(`${name} points at "${file}", which does not exist; refusing to skip the TLS integration tests`);
+    }
     f = await controlFixture();
   });
   afterAll(() => f.close());
@@ -47,7 +56,7 @@ describe.skipIf(!TRUSTED || !UNTRUSTED)('database TLS with certificate verificat
       const r = await pool.query('SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()');
       return { ok: true as const, ssl: r.rows[0]?.ssl as boolean };
     } catch (e) {
-      return { ok: false as const, error: (e as Error).message };
+      return { ok: false as const, error: (e as Error).message, code: (e as { code?: string }).code };
     } finally {
       await pool.end().catch(() => undefined);
     }
@@ -67,12 +76,17 @@ describe.skipIf(!TRUSTED || !UNTRUSTED)('database TLS with certificate verificat
     expect(await probe(controlUrl(), false)).toMatchObject({ ok: true, ssl: false });
   });
 
-  it('host name verification stays on: the right CA but a name the certificate does not cover is refused', async () => {
-    const u = new URL(controlUrl());
-    u.hostname = '127.0.0.2';
-    const r = await probe(u.toString(), tlsOptions(true, TRUSTED));
-    expect(r.ok).toBe(false);
-    expect((r as { error: string }).error).toMatch(/altnames|hostname|IP|ECONNREFUSED|certificate/i);
+  it('host name verification stays on: right CA and a reachable server, but a TLS server name the certificate does not cover is refused', async () => {
+    // Same reachable target (127.0.0.1) throughout; only the name the certificate is checked against changes.
+    const verified = tlsOptions(true, TRUSTED) as Exclude<ReturnType<typeof tlsOptions>, false>;
+    expect(await probe(controlUrl(), { ...verified, servername: 'localhost' })).toEqual({ ok: true, ssl: true }); // control: name is in the SAN list
+    const wrong = await probe(controlUrl(), { ...verified, servername: 'wrong.example' });
+    expect(wrong.ok).toBe(false);
+    // Must be the certificate host name check, not a refused/timed-out/DNS failure.
+    expect((wrong as { code?: string }).code).toBe('ERR_TLS_CERT_ALTNAME_INVALID');
+    expect((wrong as { error: string }).error).toMatch(/not in the cert's altnames/);
+    // Proves the failure above is caused by verification: with verification off the very same connection succeeds.
+    expect(await probe(controlUrl(), { rejectUnauthorized: false, ca: verified.ca, servername: 'wrong.example' })).toEqual({ ok: true, ssl: true });
   });
 
   it('school database pools (TenantRouter via the API): trusted CA → login works over TLS; untrusted CA → school unavailable', async () => {

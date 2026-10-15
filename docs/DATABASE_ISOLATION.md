@@ -99,7 +99,7 @@ The privileges above are tested. The following controls are **deployment configu
 4. Verifies, per table, the row count and an MD5 digest of the canonical row content against the shared source, plus the user count. Any mismatch aborts, rolls back and reopens the school on the shared database.
 5. Flips the registry (`db_mode='dedicated'`, `migrated_from_shared_at`) and audits it. The shared rows are **left untouched**. Sessions do not move; users sign in again.
 
-**Concurrency.** The whole lifecycle (steps 1–5, rollback and recovery) runs under a per-school PostgreSQL advisory lock held on a dedicated control-plane connection (`migrate:<school id>`). A second migrate, rollback or recovery for the same school fails immediately with "another migration or recovery holds the lock"; `migration-inspect` reports `migration_in_progress`. The lock is session-level, so a crashed process releases it automatically.
+**Concurrency.** The whole lifecycle (steps 1–5, rollback and recovery) runs under a per-school PostgreSQL advisory lock held on a dedicated control-plane connection (a 64-bit key derived from SHA-256 of `petra:migrate:<school id>`; if the unlock cannot be confirmed the connection is destroyed instead of pooled). A second migrate, rollback or recovery for the same school fails immediately with "another migration or recovery holds the lock"; `migration-inspect` reports `migration_in_progress`. The lock is session-level, so a crashed process releases it automatically.
 
 ### Recovering a school left in `maintenance`
 

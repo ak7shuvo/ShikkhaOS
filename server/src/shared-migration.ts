@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import pg from 'pg';
 import type { Db } from './db.js';
 import { dbNameFor, provisionSchool, urlForDb, type ProvisionDeps } from './provisioning.js';
@@ -92,23 +93,32 @@ export class MigrationBusyError extends Error {
   }
 }
 
+/** 64-bit advisory-lock key from SHA-256 of a namespaced name (a 32-bit hash lets unrelated schools collide, ~1 in 4 billion per pair). */
+export const migrationLockKey = (schoolId: string): string => createHash('sha256').update(`petra:migrate:${schoolId}`).digest().readBigInt64BE(0).toString();
+
 /**
  * Per-school advisory lock held on a dedicated control-plane connection for the WHOLE lifecycle (provisioning of the
  * target, maintenance window, copy, verification, cut-over, recovery, rollback). Session-level, so it is released
- * automatically if the process dies. Fails fast instead of waiting.
+ * automatically if the process dies. Fails fast instead of waiting. If the unlock cannot be confirmed the connection is
+ * destroyed rather than returned to the pool, because ending the session is what frees the lock.
  */
 async function withMigrationLock<T>(control: Db, schoolId: string, fn: () => Promise<T>): Promise<T> {
   const conn = await control.connect();
+  const key = migrationLockKey(schoolId);
+  let discard = false;
   try {
-    const got = (await conn.query(`SELECT pg_try_advisory_lock(hashtext($1)) AS ok`, [`migrate:${schoolId}`])).rows[0].ok as boolean;
+    const got = (await conn.query(`SELECT pg_try_advisory_lock($1::bigint) AS ok`, [key])).rows[0].ok as boolean;
     if (!got) throw new MigrationBusyError();
     try {
       return await fn();
     } finally {
-      await conn.query(`SELECT pg_advisory_unlock(hashtext($1))`, [`migrate:${schoolId}`]).catch(() => undefined);
+      discard = !(await conn.query(`SELECT pg_advisory_unlock($1::bigint) AS ok`, [key]).then(
+        (r) => r.rows[0].ok === true,
+        () => false,
+      ));
     }
   } finally {
-    conn.release();
+    conn.release(discard ? true : undefined);
   }
 }
 

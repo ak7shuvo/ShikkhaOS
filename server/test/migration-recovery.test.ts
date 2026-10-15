@@ -6,6 +6,7 @@ import { dbNameFor, urlForDb } from '../src/provisioning.js';
 import {
   inspectMaintenance,
   MigrationBusyError,
+  migrationLockKey,
   migrateSharedToDedicated,
   recoverMaintenance,
   rollbackToShared,
@@ -225,5 +226,41 @@ describe('interrupted migration → recovery workflow', () => {
     const err = (await f.control.query(`SELECT provisioning_error FROM schools WHERE id = $1`, [S.schoolId])).rows[0].provisioning_error as string;
     expect(err).toMatch(/after the copy was committed \(target kept\)/);
     expect((await targetRows(S.schoolId, `SELECT count(*)::int AS n FROM schools`))[0].n).toBe(1);
+  });
+});
+
+describe('migration lock key', () => {
+  it('is a stable, distinct, namespaced 64-bit key per school, and is what the lifecycle actually holds', async () => {
+    const a = migrationLockKey('00000000-0000-0000-0000-000000000001');
+    const b = migrationLockKey('00000000-0000-0000-0000-000000000002');
+    expect(a).toBe(migrationLockKey('00000000-0000-0000-0000-000000000001'));
+    expect(a).not.toBe(b);
+    for (const k of [a, b]) expect(BigInt(k) >= -(2n ** 63n) && BigInt(k) < 2n ** 63n).toBe(true);
+
+    const S = await seed(h, 'mrc-key');
+    let held = false;
+    let heldOther = true;
+    await migrateSharedToDedicated(
+      {
+        ...deps,
+        afterTable: async (t: string) => {
+          if (t !== 'schools') return;
+          const q = (key: string) =>
+            f.control.query(
+              `SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND granted AND ((classid::bigint << 32) | objid::bigint) = $1::bigint AND objsubid = 1`,
+              [key],
+            );
+          held = (await q(migrationLockKey(S.schoolId))).rows[0].n === 1;
+          heldOther = (await q(b)).rows[0].n > 0;
+        },
+      },
+      S.schoolId,
+    );
+    expect(held).toBe(true);
+    expect(heldOther).toBe(false);
+    // released afterwards: not busy any more
+    const after = await f.control.query(`SELECT pg_try_advisory_lock($1::bigint) AS ok`, [migrationLockKey(S.schoolId)]);
+    expect(after.rows[0].ok).toBe(true);
+    await f.control.query(`SELECT pg_advisory_unlock_all()`);
   });
 });
