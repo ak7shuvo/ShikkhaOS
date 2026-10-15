@@ -1,0 +1,15 @@
+{
+  "name": "@shikkhaos/e2e",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "prepare-db": "tsx --env-file-if-exists=../.env prepare.ts",
+    "test": "npm run prepare-db && playwright test",
+    "test:negative": "npm run prepare-db && E2E_SIMULATE_BROKEN_LOGOUT=1 playwright test",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1"
+  }
+}

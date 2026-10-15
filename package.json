@@ -2,10 +2,11 @@
   "name": "shikkhaos",
   "private": true,
   "version": "0.1.0",
-  "description": "ShikkhaOS \u2014 School Management & Academic Information System",
+  "description": "ShikkhaOS — School Management & Academic Information System",
   "workspaces": [
     "server",
-    "web"
+    "web",
+    "e2e"
   ],
   "engines": {
     "node": ">=20"
@@ -17,12 +18,13 @@
     "db:migrate": "npm run db:migrate -w server",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
-    "typecheck": "npm run typecheck -w server && npm run typecheck -w web",
+    "typecheck": "npm run typecheck -w server && npm run typecheck -w web && npm run typecheck -w e2e",
     "test": "npm run test -w server && npm run test -w web",
     "build": "npm run build -w server && npm run build -w web",
     "control:setup": "npm run control:setup -w server",
     "control:migrate": "npm run control:migrate -w server",
-    "petra": "npm run petra -w server --"
+    "petra": "npm run petra -w server --",
+    "e2e": "npm run test -w e2e"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
