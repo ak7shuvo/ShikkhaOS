@@ -73,6 +73,36 @@ describe('platform terms API cannot silently reduce retention', () => {
     expect((await h.control.query(`SELECT retention_days FROM subscriptions WHERE school_id = $1`, [S.schoolId])).rows[0].retention_days).toBe(3650);
   });
 
+  it('column names are never taken from the request: hostile keys and values cannot reach the SQL (I-1)', async () => {
+    const S = await seed(h, 'ret-inj');
+    const before = (await h.control.query(`SELECT grace_days, readonly_days, retention_days, legal_hold FROM subscriptions WHERE school_id = $1`, [S.schoolId]))
+      .rows[0];
+    const hostile = {
+      'grace_days = 0, status': 'cancelled',
+      'grace_days; DROP TABLE subscriptions; --': 1,
+      school_id: S.schoolId,
+      '"; DELETE FROM schools; --': true,
+      status: 'cancelled',
+      grace_days: 7,
+    };
+    const ok = await terms(S.schoolId, hostile);
+    expect(ok.status).toBe(200); // unknown keys are dropped by validation; only the declared field is written
+    const row = (await h.control.query(`SELECT status, grace_days, school_id FROM subscriptions WHERE school_id = $1`, [S.schoolId])).rows[0];
+    expect(row.grace_days).toBe(7);
+    expect(row.status).not.toBe('cancelled');
+    expect((await h.control.query(`SELECT count(*)::int AS n FROM schools WHERE id = $1`, [S.schoolId])).rows[0].n).toBe(1);
+    // only hostile keys -> nothing to update
+    expect((await terms(S.schoolId, { 'grace_days; DROP TABLE subscriptions; --': 1 })).status).toBe(400);
+    // hostile values of the right keys are rejected by type validation, not interpolated
+    for (const v of ['1; DROP TABLE subscriptions', "1' OR '1'='1", null, [1], { a: 1 }])
+      expect((await terms(S.schoolId, { grace_days: v })).status, JSON.stringify(v)).toBe(400);
+    expect((await h.control.query(`SELECT readonly_days, retention_days, legal_hold FROM subscriptions WHERE school_id = $1`, [S.schoolId])).rows[0]).toEqual({
+      readonly_days: before.readonly_days,
+      retention_days: before.retention_days,
+      legal_hold: before.legal_hold,
+    });
+  });
+
   it('a rejected request changes nothing and writes no audit record; an accepted one records requested and previous values', async () => {
     const S = await seed(h, 'ret2');
     const audits = async () =>
