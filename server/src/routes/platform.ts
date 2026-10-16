@@ -1,9 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { PLATFORM_COOKIE, parse, platformAuthz, platformOf } from '../context.js';
+import { parse, platformAuthz, platformOf } from '../context.js';
 import { AppError, notFound } from '../errors.js';
 import { MIN_RETENTION_DAYS, entitlementOf, storedStatusFor, type SubscriptionRow } from '../entitlements.js';
-import { burnPasswordCheck, hashToken, newSessionToken, verifyPassword } from '../passwords.js';
 import { platformAudit, recordPayment, registerSchool, SLUG_RE } from '../registry.js';
 import { REGISTRY_COLUMNS } from '../tenancy.js';
 import { validateBranding } from '../branding.js';
@@ -17,59 +16,6 @@ const SAFE_COLUMNS = `s.id, s.slug, s.name, s.status, s.db_mode, s.db_name, s.pr
 export async function platformRoutes(app: FastifyInstance): Promise<void> {
   const { control, config, router, entitlements } = app.deps;
   const guard = { preHandler: platformAuthz(app) };
-
-  // ------------------------------------------------------------------ authentication
-  app.post('/platform/auth/login', { config: { rateLimit: { max: config.LOGIN_RATE_LIMIT_PER_MINUTE, timeWindow: '1 minute' } } }, async (req, reply) => {
-    const b = parse(z.object({ email: z.string().email().max(254), password: z.string().min(1).max(256) }), req.body);
-    const fail = () => new AppError(401, 'INVALID_CREDENTIALS', 'Invalid email or password');
-    const a = (await control.query(`SELECT id, password_hash, status, locked_until FROM platform_admins WHERE email = $1`, [b.email])).rows[0];
-    if (!a) {
-      await burnPasswordCheck(b.password);
-      throw fail();
-    }
-    const locked = a.locked_until && new Date(a.locked_until) > new Date();
-    const ok = await verifyPassword(a.password_hash, b.password);
-    if (locked || a.status !== 'active' || !ok) {
-      if (!ok && !locked && a.status === 'active') {
-        await control.query(
-          `UPDATE platform_admins SET failed_login_count = failed_login_count + 1,
-             locked_until = CASE WHEN failed_login_count + 1 >= $2 THEN now() + make_interval(mins => $3) ELSE locked_until END WHERE id = $1`,
-          [a.id, config.LOGIN_MAX_FAILURES, config.LOGIN_LOCK_MINUTES],
-        );
-      }
-      throw fail();
-    }
-    const token = newSessionToken();
-    await control.query(`UPDATE platform_admins SET failed_login_count = 0, locked_until = NULL WHERE id = $1`, [a.id]);
-    await control.query(`INSERT INTO platform_sessions (token_hash, admin_id, expires_at) VALUES ($1,$2, now() + make_interval(hours => $3))`, [
-      hashToken(token),
-      a.id,
-      config.SESSION_TTL_HOURS,
-    ]);
-    await control.query(`DELETE FROM platform_sessions WHERE id IN (SELECT id FROM platform_sessions WHERE admin_id = $1 ORDER BY created_at DESC OFFSET $2)`, [
-      a.id,
-      config.MAX_SESSIONS_PER_USER,
-    ]);
-    reply.setCookie(PLATFORM_COOKIE, token, {
-      httpOnly: true,
-      sameSite: 'strict',
-      secure: config.COOKIE_SECURE,
-      path: '/api/platform',
-      maxAge: config.SESSION_TTL_HOURS * 3600,
-    });
-    await platformAudit(control, { actorId: a.id, action: 'platform.login', entityType: 'session' });
-    return { admin: { id: a.id, email: b.email } };
-  });
-
-  app.post('/platform/auth/logout', guard, async (req, reply) => {
-    await control.query('DELETE FROM platform_sessions WHERE id = $1', [platformOf(req).sessionId]);
-    reply.clearCookie(PLATFORM_COOKIE, { path: '/api/platform' });
-    return { ok: true };
-  });
-  app.get('/platform/auth/me', guard, async (req) => {
-    const p = platformOf(req);
-    return { admin: { id: p.adminId, email: p.email, full_name: p.fullName } };
-  });
 
   // ------------------------------------------------------------------ schools
   app.get('/platform/schools', guard, async () => {

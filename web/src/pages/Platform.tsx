@@ -5,6 +5,7 @@ import { useI18n } from '../i18n';
 
 interface Admin {
   admin: { id: string; email: string };
+  mfa: { enabled: boolean; required: boolean; state: 'ok' | 'enrolment_required' | 'mfa_required' };
 }
 interface SchoolRow {
   id: string;
@@ -64,7 +65,16 @@ export function PlatformApp() {
           </Button>
         )}
       </div>
-      {me.data ? <Schools /> : <PlatformLogin onDone={me.reload} />}
+      {!me.data ? (
+        <PlatformLogin onDone={me.reload} />
+      ) : me.data.mfa.state === 'enrolment_required' ? (
+        <MfaEnrol onDone={me.reload} />
+      ) : (
+        <>
+          <Schools />
+          <Security mfaEnabled={me.data.mfa.enabled} />
+        </>
+      )}
     </div>
   );
 }
@@ -72,14 +82,27 @@ export function PlatformApp() {
 function PlatformLogin({ onDone }: { onDone: () => void }) {
   const { t } = useI18n();
   const [f, setF] = useState({ email: '', password: '' });
+  const [code, setCode] = useState('');
+  const [needCode, setNeedCode] = useState(false);
+  const [useRecovery, setUseRecovery] = useState(false);
   const a = useAction();
   const submit = (e: FormEvent) => {
     e.preventDefault();
     void a.run(async () => {
-      await api.post('/platform/auth/login', f);
+      const extra = needCode ? (useRecovery ? { recovery_code: code.trim() } : { mfa_code: code.trim() }) : {};
+      try {
+        await api.post('/platform/auth/login', { ...f, ...extra });
+      } catch (err) {
+        if (err instanceof ApiError && err.code === 'MFA_REQUIRED') {
+          setNeedCode(true);
+          return; // not an error: ask for the second factor
+        }
+        throw err;
+      }
       onDone();
     });
   };
+  const err = a.error instanceof ApiError && a.error.code === 'INVALID_MFA_CODE' ? t('error.INVALID_MFA_CODE') : a.error ? t('login.invalid') : null;
   return (
     <form className="card stack login" onSubmit={submit}>
       <h1>{t('platform.console')}</h1>
@@ -88,6 +111,7 @@ function PlatformLogin({ onDone }: { onDone: () => void }) {
         type="email"
         autoComplete="username"
         required
+        readOnly={needCode}
         value={f.email}
         onChange={(e) => setF({ ...f, email: e.target.value })}
       />
@@ -96,14 +120,198 @@ function PlatformLogin({ onDone }: { onDone: () => void }) {
         type="password"
         autoComplete="current-password"
         required
+        readOnly={needCode}
         value={f.password}
         onChange={(e) => setF({ ...f, password: e.target.value })}
       />
-      {a.error ? <div className="banner banner-error">{t('login.invalid')}</div> : null}
+      {needCode && (
+        <>
+          <p className="muted">{useRecovery ? t('platform.mfa.recovery') : t('platform.mfa.prompt')}</p>
+          <TextField
+            label={useRecovery ? t('platform.mfa.recovery') : t('platform.mfa.code')}
+            autoComplete="one-time-code"
+            inputMode={useRecovery ? 'text' : 'numeric'}
+            required
+            autoFocus
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+          />
+          <Button
+            small
+            variant="secondary"
+            onClick={() => {
+              setUseRecovery(!useRecovery);
+              setCode('');
+            }}
+          >
+            {useRecovery ? t('platform.mfa.useApp') : t('platform.mfa.useRecovery')}
+          </Button>
+        </>
+      )}
+      {err ? <div className="banner banner-error">{err}</div> : null}
       <Button type="submit" busy={a.busy}>
         {t('login.submit')}
       </Button>
     </form>
+  );
+}
+
+/** Mandatory first-time setup: password again -> secret -> code -> recovery codes (shown once). */
+function MfaEnrol({ onDone }: { onDone: () => void }) {
+  const { t } = useI18n();
+  const [password, setPassword] = useState('');
+  const [setup, setSetup] = useState<{ secret: string; otpauth_uri: string } | null>(null);
+  const [code, setCode] = useState('');
+  const [codes, setCodes] = useState<string[] | null>(null);
+  const a = useAction();
+  const start = (e: FormEvent) => {
+    e.preventDefault();
+    void a.run(async () => {
+      setSetup(await api.post('/platform/auth/mfa/enrol', { current_password: password }));
+      setPassword('');
+    });
+  };
+  const confirm = (e: FormEvent) => {
+    e.preventDefault();
+    void a.run(async () => {
+      const r = await api.post<{ recovery_codes: string[] }>('/platform/auth/mfa/confirm', { code: code.trim() });
+      setCodes(r.recovery_codes);
+    });
+  };
+  if (codes)
+    return (
+      <Card title={t('platform.mfa.recoveryTitle')}>
+        <p>{t('platform.mfa.recoveryWarn')}</p>
+        <pre aria-label={t('platform.mfa.recoveryTitle')}>{codes.join('\n')}</pre>
+        <Button onClick={onDone}>{t('platform.mfa.saved')}</Button>
+      </Card>
+    );
+  return (
+    <Card title={t('platform.mfa.setupTitle')}>
+      <p>{t('platform.mfa.setupIntro')}</p>
+      {!setup ? (
+        <form className="stack" onSubmit={start}>
+          <TextField
+            label={t('platform.currentPassword')}
+            type="password"
+            autoComplete="current-password"
+            required
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          <ErrorBanner error={a.error} />
+          <Button type="submit" busy={a.busy}>
+            {t('platform.mfa.start')}
+          </Button>
+        </form>
+      ) : (
+        <form className="stack" onSubmit={confirm}>
+          <TextField label={t('platform.mfa.secret')} readOnly value={setup.secret} onFocus={(e) => e.currentTarget.select()} />
+          <TextField label={t('platform.mfa.uri')} readOnly value={setup.otpauth_uri} onFocus={(e) => e.currentTarget.select()} />
+          <TextField
+            label={t('platform.mfa.code')}
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            required
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+          />
+          <ErrorBanner error={a.error} />
+          <Button type="submit" busy={a.busy}>
+            {t('platform.mfa.activate')}
+          </Button>
+        </form>
+      )}
+    </Card>
+  );
+}
+
+/** Password change and recovery-code rotation for the signed-in administrator. */
+function Security({ mfaEnabled }: { mfaEnabled: boolean }) {
+  const { t } = useI18n();
+  const [pw, setPw] = useState({ current_password: '', new_password: '' });
+  const [rc, setRc] = useState({ current_password: '', mfa_code: '' });
+  const [codes, setCodes] = useState<string[] | null>(null);
+  const change = useAction();
+  const regen = useAction();
+  return (
+    <Card title={t('platform.security')}>
+      <form
+        className="stack"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void change.run(async () => {
+            await api.post('/platform/auth/change-password', pw);
+            setPw({ current_password: '', new_password: '' });
+          });
+        }}
+      >
+        <h2>{t('platform.changePassword')}</h2>
+        <TextField
+          label={t('platform.currentPassword')}
+          type="password"
+          autoComplete="current-password"
+          required
+          value={pw.current_password}
+          onChange={(e) => setPw({ ...pw, current_password: e.target.value })}
+        />
+        <TextField
+          label={t('platform.newPassword')}
+          type="password"
+          autoComplete="new-password"
+          required
+          minLength={12}
+          value={pw.new_password}
+          onChange={(e) => setPw({ ...pw, new_password: e.target.value })}
+        />
+        <ErrorBanner error={change.error} />
+        {change.done && <Notice>{t('platform.passwordChanged')}</Notice>}
+        <Button type="submit" busy={change.busy}>
+          {t('platform.changePassword')}
+        </Button>
+      </form>
+      {mfaEnabled && (
+        <form
+          className="stack"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void regen.run(async () => {
+              const r = await api.post<{ recovery_codes: string[] }>('/platform/auth/mfa/recovery-codes', { ...rc, mfa_code: rc.mfa_code.trim() });
+              setCodes(r.recovery_codes);
+              setRc({ current_password: '', mfa_code: '' });
+            });
+          }}
+        >
+          <h2>{t('platform.newRecoveryCodes')}</h2>
+          <TextField
+            label={t('platform.currentPassword')}
+            type="password"
+            autoComplete="current-password"
+            required
+            value={rc.current_password}
+            onChange={(e) => setRc({ ...rc, current_password: e.target.value })}
+          />
+          <TextField
+            label={t('platform.mfa.code')}
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            required
+            value={rc.mfa_code}
+            onChange={(e) => setRc({ ...rc, mfa_code: e.target.value })}
+          />
+          <ErrorBanner error={regen.error} />
+          {codes && (
+            <>
+              <p>{t('platform.mfa.recoveryWarn')}</p>
+              <pre>{codes.join('\n')}</pre>
+            </>
+          )}
+          <Button type="submit" busy={regen.busy}>
+            {t('platform.newRecoveryCodes')}
+          </Button>
+        </form>
+      )}
+    </Card>
   );
 }
 
