@@ -67,16 +67,19 @@ const schema = z.object({
   COOKIE_SECURE: bool.optional(),
   // Platform administrators must use TOTP MFA. Defaults to true in production (and may not be false there), false elsewhere.
   PLATFORM_MFA_REQUIRED: bool.optional(),
+  PLATFORM_STEPUP_REQUIRED: bool.optional(),
+  PLATFORM_STEPUP_MINUTES: z.coerce.number().int().min(1).max(30).default(5),
   LOGIN_MAX_FAILURES: z.coerce.number().int().min(3).max(20).default(5),
   LOGIN_LOCK_MINUTES: z.coerce.number().int().min(1).max(1440).default(15),
   LOGIN_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10000).default(10),
   API_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(10).max(100000).default(600),
 });
 
-export type Config = Omit<z.infer<typeof schema>, 'COOKIE_SECURE' | 'TRUST_PROXY' | 'PLATFORM_MFA_REQUIRED'> & {
+export type Config = Omit<z.infer<typeof schema>, 'COOKIE_SECURE' | 'TRUST_PROXY' | 'PLATFORM_MFA_REQUIRED' | 'PLATFORM_STEPUP_REQUIRED'> & {
   COOKIE_SECURE: boolean;
   TRUST_PROXY: boolean | number | string[];
   PLATFORM_MFA_REQUIRED: boolean;
+  PLATFORM_STEPUP_REQUIRED: boolean;
 };
 
 /** Maps the TRUST_PROXY string to Fastify's `trustProxy` option. */
@@ -103,6 +106,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     const problems: string[] = [];
     if (!cookieSecure) problems.push('COOKIE_SECURE must be true in production');
     if (c.PLATFORM_MFA_REQUIRED === false) problems.push('PLATFORM_MFA_REQUIRED must not be false in production');
+    if (c.PLATFORM_STEPUP_REQUIRED === false) problems.push('PLATFORM_STEPUP_REQUIRED must not be false in production');
     if (c.ALLOWED_ORIGINS.some((o) => !o.startsWith('https://'))) problems.push('ALLOWED_ORIGINS must be https:// origins in production');
     problems.push(...trustProxyProblems(c.TRUST_PROXY));
     problems.push(...productionDbTlsProblems(c));
@@ -112,6 +116,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...c,
     COOKIE_SECURE: cookieSecure,
     PLATFORM_MFA_REQUIRED: c.PLATFORM_MFA_REQUIRED ?? c.NODE_ENV === 'production',
+    PLATFORM_STEPUP_REQUIRED: c.PLATFORM_STEPUP_REQUIRED ?? c.NODE_ENV === 'production',
     TRUST_PROXY: parseTrustProxy(c.TRUST_PROXY),
   };
 }
