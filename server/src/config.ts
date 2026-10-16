@@ -70,6 +70,8 @@ const schema = z.object({
   PLATFORM_STEPUP_REQUIRED: bool.optional(),
   PLATFORM_STEPUP_MINUTES: z.coerce.number().int().min(1).max(30).default(5),
   LOGIN_MAX_FAILURES: z.coerce.number().int().min(3).max(20).default(5),
+  /** Platform logins: ceiling across ALL source addresses (distributed guessing). LOGIN_MAX_FAILURES is the per-address limit. */
+  PLATFORM_LOGIN_ACCOUNT_MAX_FAILURES: z.coerce.number().int().min(10).max(1000).default(30),
   LOGIN_LOCK_MINUTES: z.coerce.number().int().min(1).max(1440).default(15),
   LOGIN_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10000).default(10),
   API_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(10).max(100000).default(600),
