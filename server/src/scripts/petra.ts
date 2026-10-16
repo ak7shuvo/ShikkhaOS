@@ -252,11 +252,14 @@ try {
       const pw = process.env.PLATFORM_ADMIN_PASSWORD;
       if (!email || !pw || pw.length < PLATFORM_PASSWORD_MIN_LENGTH)
         die(`PLATFORM_ADMIN_EMAIL and PLATFORM_ADMIN_PASSWORD (min ${PLATFORM_PASSWORD_MIN_LENGTH} chars) are required`);
-      await control.query(`INSERT INTO platform_admins (email, password_hash, full_name) VALUES ($1,$2,'Platform Administrator')`, [
+      const role = process.env.PLATFORM_ADMIN_ROLE ?? 'owner';
+      if (!['owner', 'operator', 'viewer'].includes(role)) die('PLATFORM_ADMIN_ROLE must be owner, operator or viewer');
+      await control.query(`INSERT INTO platform_admins (email, password_hash, full_name, role) VALUES ($1,$2,'Platform Administrator',$3)`, [
         email,
         await hashPassword(pw!),
+        role,
       ]);
-      console.log(`Platform admin ${email} created.`);
+      console.log(`Platform admin ${email} created with role ${role}.`);
       break;
     }
     case 'platform-admin-mfa-reset': {

@@ -143,6 +143,8 @@ export async function platformAuthRoutes(app: FastifyInstance): Promise<void> {
     return {
       admin: { id: p.adminId, email: p.email, full_name: p.fullName },
       mfa: { enabled: p.mfaEnabled, required: config.PLATFORM_MFA_REQUIRED, state: p.mfaState },
+      role: p.role,
+      step_up: { required: config.PLATFORM_STEPUP_REQUIRED, minutes: config.PLATFORM_STEPUP_MINUTES },
     };
   });
 
@@ -221,6 +223,36 @@ export async function platformAuthRoutes(app: FastifyInstance): Promise<void> {
     }
     await platformAudit(control, { actorId: p.adminId, action: 'platform.recovery_codes_regenerated', entityType: 'platform_admin', entityId: p.adminId });
     return { recovery_codes: codes };
+  });
+
+  // Step-up: destructive actions need the second factor re-proved within PLATFORM_STEPUP_MINUTES. A TOTP step is single use, so the
+  // code must come from a later 30-second window than the one used to sign in. Without MFA (development only) the password is used.
+  app.post('/platform/auth/step-up', { ...full, ...limited }, async (req) => {
+    const p = platformOf(req);
+    const b = parse(
+      z.object({
+        mfa_code: z
+          .string()
+          .regex(/^\d{6}$/)
+          .optional(),
+        current_password: z.string().min(1).max(256).optional(),
+      }),
+      req.body,
+    );
+    if (p.mfaEnabled) {
+      if (!b.mfa_code) throw new AppError(400, 'VALIDATION_ERROR', 'mfa_code is required');
+      const a = (await control.query(`SELECT mfa_secret_enc, mfa_last_step::text AS mfa_last_step FROM platform_admins WHERE id = $1`, [p.adminId])).rows[0];
+      if (!(await consumeTotp(p.adminId, a.mfa_secret_enc, a.mfa_last_step, b.mfa_code))) {
+        await recordFailure(p.adminId);
+        throw new AppError(401, 'INVALID_MFA_CODE', 'Invalid verification code');
+      }
+    } else {
+      if (!b.current_password) throw new AppError(400, 'VALIDATION_ERROR', 'current_password is required');
+      await reauthenticate(p.adminId, b.current_password);
+    }
+    await control.query(`UPDATE platform_sessions SET step_up_at = $2 WHERE id = $1`, [p.sessionId, now()]);
+    await platformAudit(control, { actorId: p.adminId, action: 'platform.step_up', entityType: 'platform_admin', entityId: p.adminId });
+    return { ok: true, valid_for_minutes: config.PLATFORM_STEPUP_MINUTES };
   });
 
   // ------------------------------------------------------------------ password change

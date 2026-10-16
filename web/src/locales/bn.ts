@@ -207,6 +207,13 @@ export const bn: Record<keyof typeof en, string> = {
   'platform.mfa.recoveryWarn': 'প্রতিটি কোড একবারই কাজ করে এবং শুধু এখনই দেখানো হচ্ছে। পাসওয়ার্ড থেকে আলাদা করে অফলাইনে রাখুন।',
   'platform.mfa.saved': 'আমি কোডগুলো সংরক্ষণ করেছি',
   'platform.security': 'নিরাপত্তা',
+  'platform.stepUp.title': 'এই কাজটি নিশ্চিত করুন',
+  'platform.stepUp.intro':
+    'এই কাজটি অপরিবর্তনীয় বা পুরো স্কুলকে প্রভাবিত করে। আপনার অথেন্টিকেটর থেকে একটি নতুন যাচাইকরণ কোড দিন (দ্বি-স্তর যাচাই চালু না থাকলে পাসওয়ার্ড)।',
+  'platform.stepUp.code': 'যাচাইকরণ কোড',
+  'platform.stepUp.confirm': 'নিশ্চিত করে চালিয়ে যান',
+  'error.STEP_UP_REQUIRED': 'চালিয়ে যেতে একটি নতুন যাচাইকরণ কোড দিয়ে নিশ্চিত করুন।',
+  'error.INSUFFICIENT_ROLE': 'আপনার প্ল্যাটফর্ম ভূমিকা এই কাজের অনুমতি দেয় না।',
   'platform.changePassword': 'পাসওয়ার্ড পরিবর্তন',
   'platform.currentPassword': 'বর্তমান পাসওয়ার্ড',
   'platform.newPassword': 'নতুন পাসওয়ার্ড (কমপক্ষে ১২ অক্ষর)',
