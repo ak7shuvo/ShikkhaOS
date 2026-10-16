@@ -372,3 +372,19 @@ export async function resetSchoolAccountPassword(d: ProvisionDeps, schoolId: str
   await platformAudit(d.control, { actorId: null, schoolId, action: 'school.account_password_reset', entityType: 'user', metadata: { by: 'operator' } });
   return { password };
 }
+
+/** Clears every login lock (per-address and account-wide) for one account, e.g. after a targeted lock-out. Audited in the control plane. */
+export async function unlockSchoolAccount(d: ProvisionDeps, schoolId: string, email: string): Promise<void> {
+  const e = await loadEntry(d, schoolId);
+  if (e.db_mode !== 'dedicated' || !e.db_name) throw new Error('dedicated database required');
+  const c = new pg.Client({ connectionString: urlForDb(d.adminUrl, e.db_name) });
+  await c.connect();
+  try {
+    const u = await c.query(`UPDATE users SET failed_login_count = 0, locked_until = NULL WHERE email = $1 RETURNING id`, [email]);
+    if (!u.rowCount) throw new Error('no such account in this school');
+    await c.query(`DELETE FROM login_attempts WHERE user_id = $1`, [u.rows[0].id]);
+  } finally {
+    await c.end();
+  }
+  await platformAudit(d.control, { actorId: null, schoolId, action: 'school.account_unlocked', entityType: 'user', metadata: { by: 'operator' } });
+}
