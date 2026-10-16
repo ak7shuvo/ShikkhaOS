@@ -172,11 +172,24 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const a = authOf(req);
     const b = parse(z.object({ current_password: z.string().min(1).max(256), new_password: z.string().min(PASSWORD_MIN_LENGTH).max(256) }), req.body);
     const stored = (await a.pool.query(`SELECT * FROM auth_user_by_email($1)`, [a.email])).rows[0];
-    if (!stored || !(await verifyPassword(stored.password_hash, b.current_password)))
+    if (!stored) throw new AppError(403, 'WRONG_PASSWORD', 'Current password is incorrect');
+    // Same lockout as login: a thief of a live session must not be able to guess the current password at leisure.
+    if (stored.locked_until && new Date(stored.locked_until) > new Date())
+      throw new AppError(403, 'ACCOUNT_LOCKED', 'Too many failed attempts; try again later');
+    if (!(await verifyPassword(stored.password_hash, b.current_password))) {
+      await withContext(a.pool, { userId: a.userId }, (tx) =>
+        tx.query(
+          `UPDATE users SET failed_login_count = failed_login_count + 1,
+             locked_until = CASE WHEN failed_login_count + 1 >= $2 THEN now() + make_interval(mins => $3) ELSE locked_until END
+           WHERE id = $1`,
+          [a.userId, config.LOGIN_MAX_FAILURES, config.LOGIN_LOCK_MINUTES],
+        ),
+      );
       throw new AppError(403, 'WRONG_PASSWORD', 'Current password is incorrect');
+    }
     const h = await hashPassword(b.new_password);
     await withContext(a.pool, { userId: a.userId, schoolId: a.entry.id }, async (tx) => {
-      await tx.query(`UPDATE users SET password_hash = $2 WHERE id = $1`, [a.userId, h]);
+      await tx.query(`UPDATE users SET password_hash = $2, failed_login_count = 0, locked_until = NULL WHERE id = $1`, [a.userId, h]);
       await tx.query(`DELETE FROM sessions WHERE user_id = $1 AND id <> $2`, [a.userId, a.sessionId]); // revoke every other session
       await audit(tx, { schoolId: a.entry.id, actorUserId: a.userId, action: 'auth.password_changed', entityType: 'user', entityId: a.userId });
     });

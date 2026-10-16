@@ -198,6 +198,19 @@ export async function schoolRoutes(app: FastifyInstance): Promise<void> {
     const { id } = parse(z.object({ id: z.string().uuid() }), req.params);
     const { status } = parse(z.object({ status: z.enum(['active', 'suspended', 'removed']) }), req.body);
     return schoolTx(app, req, async (tx, a) => {
+      if (status !== 'active') {
+        // Lock every active school_admin row so two concurrent demotions cannot both pass the "last admin" check.
+        const admins = (
+          await tx.query(`SELECT id, user_id FROM school_memberships WHERE school_id = $1 AND role = 'school_admin' AND status = 'active' FOR UPDATE`, [
+            a.schoolId,
+          ])
+        ).rows;
+        const target = admins.find((m) => m.id === id);
+        if (target) {
+          if (target.user_id === a.userId) throw new AppError(409, 'CANNOT_CHANGE_SELF', 'Administrators cannot suspend or remove their own membership');
+          if (admins.length <= 1) throw new AppError(409, 'LAST_ADMIN', 'The last active school administrator cannot be suspended or removed');
+        }
+      }
       const r = await tx.query(`UPDATE school_memberships SET status = $3 WHERE id = $1 AND school_id = $2 RETURNING id, role, status`, [
         id,
         a.schoolId,
