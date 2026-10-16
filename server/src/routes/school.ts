@@ -175,7 +175,12 @@ export async function schoolRoutes(app: FastifyInstance): Promise<void> {
     const pwHash = await hashPassword(b.initial_password);
     const userId = crypto.randomUUID();
     const out = await schoolTx(app, req, async (tx, a) => {
-      await tx.query(`INSERT INTO users (id, email, password_hash, full_name) VALUES ($1,$2,$3,$4)`, [userId, b.email, pwHash, b.full_name]);
+      await tx.query(`INSERT INTO users (id, email, password_hash, full_name, must_change_password) VALUES ($1,$2,$3,$4,true)`, [
+        userId,
+        b.email,
+        pwHash,
+        b.full_name,
+      ]);
       const m = await tx.query(`INSERT INTO school_memberships (school_id, user_id, role) VALUES ($1,$2,$3) RETURNING id, role, status`, [
         a.schoolId,
         userId,

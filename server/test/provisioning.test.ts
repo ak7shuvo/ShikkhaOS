@@ -46,7 +46,7 @@ describe('provisioning a dedicated school database', () => {
       db_name: dbNameFor(id),
       db_role: roleNameFor(id),
       provisioning_step: 'active',
-      schema_version: '003_database_acl.sql',
+      schema_version: '004_force_password_change.sql',
     });
     expect(e.db_secret_enc).toMatch(/^v1\.k1\./);
     expect(JSON.stringify(e)).not.toContain(f.deps.secrets.decrypt(e.db_secret_enc!, id));
@@ -65,6 +65,7 @@ describe('provisioning a dedicated school database', () => {
       '001_init.sql',
       '002_session_idle.sql',
       '003_database_acl.sql',
+      '004_force_password_change.sql',
     ]);
     await sdb.end();
   });
@@ -239,13 +240,13 @@ describe('per-school migrations', () => {
     const deps = { ...f.deps, schoolMigrationsDir: dir };
     const a = await provisionNew({ ...f, deps }, 'mga');
     const b = await provisionNew({ ...f, deps }, 'mgb');
-    fs.writeFileSync(path.join(dir, '003_test.sql'), 'CREATE TABLE phase2_probe (id int);');
-    expect((await checkSchoolHealth(deps, await entry(a.id))).pending_migrations).toEqual(['003_test.sql']);
-    expect(await migrateSchool(deps, a.id)).toEqual(['003_test.sql']);
+    fs.writeFileSync(path.join(dir, '005_test.sql'), 'CREATE TABLE phase2_probe (id int);');
+    expect((await checkSchoolHealth(deps, await entry(a.id))).pending_migrations).toEqual(['005_test.sql']);
+    expect(await migrateSchool(deps, a.id)).toEqual(['005_test.sql']);
     expect(await migrateSchool(deps, a.id)).toEqual([]);
     expect((await checkSchoolHealth(deps, await entry(a.id))).ok).toBe(true);
-    expect((await checkSchoolHealth(deps, await entry(b.id))).pending_migrations).toEqual(['003_test.sql']);
-    expect((await entry(a.id)).schema_version).toBe('003_test.sql');
+    expect((await checkSchoolHealth(deps, await entry(b.id))).pending_migrations).toEqual(['005_test.sql']);
+    expect((await entry(a.id)).schema_version).toBe('005_test.sql');
   });
 
   it('a failing migration rolls back and leaves the previous version intact', async () => {
@@ -253,8 +254,8 @@ describe('per-school migrations', () => {
     for (const file of fs.readdirSync(SCHOOL_MIGRATIONS_DIR)) fs.copyFileSync(path.join(SCHOOL_MIGRATIONS_DIR, file), path.join(dir, file));
     const deps = { ...f.deps, schoolMigrationsDir: dir };
     const a = await provisionNew({ ...f, deps }, 'mgfail');
-    fs.writeFileSync(path.join(dir, '003_bad.sql'), 'CREATE TABLE ok_part (id int); SELECT 1/0;');
-    await expect(migrateSchool(deps, a.id)).rejects.toThrow(/003_bad.sql failed/);
+    fs.writeFileSync(path.join(dir, '005_bad.sql'), 'CREATE TABLE ok_part (id int); SELECT 1/0;');
+    await expect(migrateSchool(deps, a.id)).rejects.toThrow(/005_bad.sql failed/);
     const c = new pg.Client({ connectionString: urlForDb(f.deps.adminUrl, dbNameFor(a.id)) });
     await c.connect();
     expect((await c.query(`SELECT to_regclass('public.ok_part') AS t`)).rows[0].t).toBeNull();

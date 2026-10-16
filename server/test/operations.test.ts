@@ -8,7 +8,7 @@ import { addDays } from '../src/entitlements.js';
 import { dropScratchDatabase, exportSchool, finalizeOffboarding, resetSchoolAccountPassword, restoreDump, startOffboarding } from '../src/operations.js';
 import { dbNameFor, provisionSchool, roleNameFor, urlForDb } from '../src/provisioning.js';
 import { controlFixture, registerNew, scratchDbName, today, type ControlFixture } from './fixtures.js';
-import { Client, harness, uniqueCode, type Harness } from './helpers.js';
+import { acceptInitialPassword, Client, harness, uniqueCode, type Harness } from './helpers.js';
 
 let h: Harness;
 let f: ControlFixture;
@@ -28,6 +28,7 @@ async function school(prefix: string) {
   const r = await provisionSchool(f.deps, id);
   const admin = new Client(h.app);
   expect((await admin.login(`admin@${slug}.example.test`, r.adminInitialPassword!, slug)).status).toBe(200);
+  await acceptInitialPassword(admin, r.adminInitialPassword!);
   return { id, slug, admin, adminEmail: `admin@${slug}.example.test`, pw: r.adminInitialPassword! };
 }
 const exists = async (name: string) => (await f.admin.query('SELECT 1 FROM pg_database WHERE datname = $1', [name])).rowCount === 1;

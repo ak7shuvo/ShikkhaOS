@@ -28,7 +28,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       (await control.query(`SELECT display_name, logo_url, primary_color, accent_color FROM school_branding WHERE school_id = $1`, [a.entry.id])).rows[0] ??
       null;
     return {
-      user: { id: a.userId, email: a.email, full_name: a.fullName, language: a.language },
+      user: { id: a.userId, email: a.email, full_name: a.fullName, language: a.language, credential_change_required: a.mustChangePassword },
       school: { id: a.entry.id, slug: a.entry.slug, name: a.entry.name },
       active_school_id: a.schoolId,
       roles: a.roles,
@@ -187,9 +187,13 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       );
       throw new AppError(403, 'WRONG_PASSWORD', 'Current password is incorrect');
     }
+    if (b.new_password === b.current_password) throw new AppError(400, 'PASSWORD_UNCHANGED', 'The new password must differ from the current one');
     const h = await hashPassword(b.new_password);
     await withContext(a.pool, { userId: a.userId, schoolId: a.entry.id }, async (tx) => {
-      await tx.query(`UPDATE users SET password_hash = $2, failed_login_count = 0, locked_until = NULL WHERE id = $1`, [a.userId, h]);
+      await tx.query(`UPDATE users SET password_hash = $2, failed_login_count = 0, locked_until = NULL, must_change_password = false WHERE id = $1`, [
+        a.userId,
+        h,
+      ]);
       await tx.query(`DELETE FROM sessions WHERE user_id = $1 AND id <> $2`, [a.userId, a.sessionId]); // revoke every other session
       await audit(tx, { schoolId: a.entry.id, actorUserId: a.userId, action: 'auth.password_changed', entityType: 'user', entityId: a.userId });
     });

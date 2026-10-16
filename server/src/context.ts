@@ -29,6 +29,8 @@ export interface AuthContext {
   roles: string[];
   permissions: Set<string>;
   memberships: { school_id: string; role: string; school_name: string }[];
+  /** Initial/reset password still in use: only logout, /auth/me and change-password are allowed until it is replaced. */
+  mustChangePassword: boolean;
 }
 
 export interface PlatformAuth {
@@ -126,6 +128,7 @@ export async function authenticate(app: FastifyInstance, req: FastifyRequest): P
     roles,
     permissions,
     memberships: usable.map((r) => ({ school_id: r.school_id, role: r.role, school_name: r.school_name })),
+    mustChangePassword: s.must_change_password === true,
   };
 }
 
@@ -142,6 +145,7 @@ export function authz(app: FastifyInstance, opts: GuardOpts = {}) {
     const auth = await authenticate(app, req);
     req.auth = auth;
     if (opts.anySession) return;
+    if (auth.mustChangePassword) throw new AppError(403, 'PASSWORD_CHANGE_REQUIRED', 'You must change your initial password before continuing');
     if (!auth.schoolId) throw new AppError(409, 'SCHOOL_CONTEXT_REQUIRED', 'No active membership in this school');
     const e = auth.entitlement;
     if (e.level === 'blocked')

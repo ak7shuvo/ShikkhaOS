@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { fillSheet, harness, loginAs, seed, type Client, type Harness } from './helpers.js';
+import { acceptInitialPassword, fillSheet, harness, loginAs, seed, type Client, type Harness } from './helpers.js';
 import type { SeededSchool } from '../src/seed-data.js';
 
 let h: Harness;
@@ -123,6 +123,7 @@ describe('guardian portal', () => {
     expect(link.body.status).toBe('pending');
     const g3 = new (await import('./helpers.js')).Client(h.app);
     expect((await g3.login('g3@ga.example.test', 'long-enough-password', A.code)).status).toBe(200);
+    await acceptInitialPassword(g3, 'long-enough-password');
     expect((await g3.get(`/guardian/students/${A.students[2]!.id}`)).status).toBe(404); // pending
     expect((await admin.post(`/student-guardians/${link.body.id}/verify`)).status).toBe(200);
     expect((await g3.get(`/guardian/students/${A.students[2]!.id}`)).status).toBe(200);

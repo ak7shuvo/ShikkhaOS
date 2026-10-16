@@ -6,6 +6,7 @@ interface AuthState {
   loading: boolean;
   login: (school: string, email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  refresh: () => Promise<void>;
   can: (permission: string) => boolean;
 }
 const Ctx = createContext<AuthState | null>(null);
@@ -35,9 +36,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(null);
     }
   }, []);
+  const refresh = useCallback(async () => setSession(await api.get<Session>('/auth/me')), []);
   const can = useCallback((p: string) => Boolean(session?.permissions.includes(p)), [session]);
 
-  return <Ctx.Provider value={{ session, loading, login, logout, can }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ session, loading, login, logout, refresh, can }}>{children}</Ctx.Provider>;
 }
 
 export function useAuth(): AuthState {

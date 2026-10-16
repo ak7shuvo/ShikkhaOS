@@ -59,7 +59,7 @@ export interface EntitlementInfo {
   retention_until: string;
 }
 export interface Session {
-  user: { id: string; email: string; full_name: string; language: 'bn' | 'en' };
+  user: { id: string; email: string; full_name: string; language: 'bn' | 'en'; credential_change_required?: boolean };
   school: { id: string; slug: string; name: string };
   active_school_id: string | null;
   roles: string[];
