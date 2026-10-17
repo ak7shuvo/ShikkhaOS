@@ -10,7 +10,7 @@ import { Exams } from './pages/Exams';
 import { GuardianChild, GuardianHome } from './pages/Guardian';
 import { Guardians } from './pages/Guardians';
 import { Login } from './pages/Login';
-import { Account } from './pages/Account';
+import { Account, ForcedPasswordChange } from './pages/Account';
 import { PlatformApp } from './pages/Platform';
 import { applyBranding } from './branding';
 import { Members } from './pages/Members';
@@ -36,6 +36,7 @@ function Shell() {
   );
   useEffect(() => applyBranding(session?.branding ?? null), [session?.branding]);
   if (!session) return null;
+  if (session.user.credential_change_required) return <ForcedPasswordChange />;
 
   const links: [string, string, boolean][] = [
     ['/', t('nav.dashboard'), true],

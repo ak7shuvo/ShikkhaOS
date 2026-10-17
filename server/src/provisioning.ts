@@ -162,7 +162,7 @@ async function run(d: ProvisionDeps, schoolId: string, seed: boolean, actorId: s
           if (!has) {
             adminInitialPassword = generateDbPassword().slice(0, 20);
             const uid = randomUUID();
-            await sdb.query(`INSERT INTO users (id, email, password_hash, full_name) VALUES ($1,$2,$3,$4)`, [
+            await sdb.query(`INSERT INTO users (id, email, password_hash, full_name, must_change_password) VALUES ($1,$2,$3,$4,true)`, [
               uid,
               e.admin_email,
               await hashPassword(adminInitialPassword),

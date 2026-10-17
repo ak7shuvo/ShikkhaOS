@@ -9,7 +9,7 @@ import { createPool } from '../src/db.js';
 import { provisionSchool } from '../src/provisioning.js';
 import { tlsOptions } from '../src/tls.js';
 import { controlFixture, registerNew, type ControlFixture } from './fixtures.js';
-import { Client, testEnv } from './helpers.js';
+import { acceptInitialPassword, Client, testEnv } from './helpers.js';
 
 const TRUSTED = process.env.PETRA_TEST_TLS_CA;
 const UNTRUSTED = process.env.PETRA_TEST_TLS_UNTRUSTED_CA;
@@ -116,6 +116,7 @@ describe.skipIf(!IN_CI && (!TRUSTED || !UNTRUSTED))('database TLS with certifica
     try {
       const c = new Client(good.app);
       expect((await c.login(`admin@${slug}.example.test`, p.adminInitialPassword!, slug)).status).toBe(200);
+      await acceptInitialPassword(c, p.adminInitialPassword!);
       expect((await c.get('/classes')).status).toBe(200);
       expect(await sslSessions()).toBeGreaterThan(0); // the school role's sessions are encrypted
     } finally {

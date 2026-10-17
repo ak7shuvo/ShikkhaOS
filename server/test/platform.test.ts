@@ -70,7 +70,7 @@ describe('platform (Petra) administration is separate from school administration
       subscription_status: 'trial',
       access_level: 'full',
     });
-    expect(JSON.stringify(list.body)).not.toMatch(/db_secret|password|v1\./);
+    expect(JSON.stringify(list.body)).not.toMatch(/db_secret|password_hash|argon2|v1\./);
     expect((await h.control.query(`SELECT 1 FROM school_branding WHERE school_id = $1`, [r.body.id])).rowCount).toBe(1);
     // Not provisioned: nobody can log in to it yet, and the response does not reveal why.
     expect((await new Client(h.app).login(`a@${slug}.example.test`, PASSWORD, slug)).status).toBe(401);

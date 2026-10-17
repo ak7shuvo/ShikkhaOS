@@ -7,7 +7,7 @@ import { exportSchool, restoreDump } from '../src/operations.js';
 import { REGISTRY_COLUMNS } from '../src/tenancy.js';
 import { controlFixture, provisionNew, registerNew, scratchDbName, type ControlFixture } from './fixtures.js';
 import { MARKER_DB, validateTestEnvironment } from './safety.js';
-import { Client, harness, type Harness } from './helpers.js';
+import { acceptInitialPassword, Client, harness, type Harness } from './helpers.js';
 
 const env = validateTestEnvironment(process.env);
 let f: ControlFixture;
@@ -205,6 +205,7 @@ describe('legitimate operator workflows still work after hardening (non-superuse
 
     const admin = new Client(h.app);
     expect((await admin.login(`admin@${slug}.example.test`, r.adminInitialPassword!, slug)).status).toBe(200);
+    await acceptInitialPassword(admin, r.adminInitialPassword!);
     expect((await admin.post('/classes', { name: 'After hardening' })).status).toBe(201);
 
     const dir = (await import('node:fs')).mkdtempSync((await import('node:path')).join((await import('node:os')).tmpdir(), 'acl-op-'));

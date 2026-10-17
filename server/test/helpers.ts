@@ -162,3 +162,12 @@ export async function fillSheet(h: Harness, teacher: Client, s: SeededSchool, su
   });
   return { sheetId, examId, open, put };
 }
+
+/** A provisioned/administrator-created account must change its initial password first; restore the same value afterwards so later logins keep working. */
+export async function acceptInitialPassword(c: Client, password: string): Promise<void> {
+  const tmp = `${password.slice(0, 12)}-temp-change`;
+  const a = await c.post('/auth/change-password', { current_password: password, new_password: tmp });
+  if (a.status !== 200) throw new Error(`forced password change failed: ${a.status}`);
+  const b = await c.post('/auth/change-password', { current_password: tmp, new_password: password });
+  if (b.status !== 200) throw new Error(`password restore failed: ${b.status}`);
+}
