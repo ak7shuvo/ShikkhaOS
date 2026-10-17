@@ -11,7 +11,7 @@ Internet ─▶ reverse proxy / TLS ─▶ API (Node, 1–2 instances) ─▶ Po
 Operator host (VPN / bastion) ── petra CLI ──────────────────────▶ PostgreSQL (privileged credential)
 ```
 
-- Serve the web build and `/api` from the **same site** over HTTPS (cookies are `HttpOnly; Secure; SameSite=Strict`). The API does not serve static files. [configurable, not verified]
+- Send the headers in `deploy/web-security-headers.json` from the static host (`deploy/nginx-web.conf.example` shows nginx; the E2E serves the real build with exactly these headers and fails if the app breaks or framing is allowed). Serve the web build and `/api` from the **same site** over HTTPS (cookies are `HttpOnly; Secure; SameSite=Strict`). The API does not serve static files. [configurable, not verified]
 - One PostgreSQL server can host the control plane and all school databases at this scale. Each school is a separate logical database with its own role (failure/permission isolation, separate dumps and restores). It is not a separate server: a PostgreSQL server outage, host compromise or superuser access affects all schools — plan backups and access control accordingly.
 - Connection budget: `schools × SCHOOL_POOL_MAX` (+ control pool) per API instance, each school role capped by `CONNECTION LIMIT 20`. Keep `max_connections` above the total; consider PgBouncer if you outgrow it. [not implemented]
 
@@ -53,7 +53,7 @@ Secrets: inject `PETRA_MASTER_KEY` and database URLs from a secret manager or a 
 | Shared (multi-instance) rate-limit store                                                                                                  | [not implemented] (in-memory per process)                                           |
 | Master key in a secret manager; documented recovery                                                                                       | [env var only; no KMS]                                                              |
 | Platform-admin MFA / IP allow-list                                                                                                        | [not implemented]                                                                   |
-| Security headers on the static host (CSP)                                                                                                 | [not implemented]                                                                   |
+| Security headers on the static host (CSP, HSTS, framing)                                                                                  | [tested locally: the built app boots under them in CI; your host must send them]    |
 | Monitoring, alerting, log shipping, dependency scanning                                                                                   | [not implemented]                                                                   |
 | Daily `petra sweep`, nightly `petra export`                                                                                               | [not scheduled]                                                                     |
 | Load / capacity test                                                                                                                      | [not done]                                                                          |
