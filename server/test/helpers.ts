@@ -65,11 +65,14 @@ export async function harness(over: Record<string, string> = {}): Promise<Harnes
 /** Minimal cookie-carrying API client over fastify.inject (real HTTP semantics, real DB). */
 export class Client {
   cookie = '';
+  /** Source address presented to the API (inject's remoteAddress); defaults to 127.0.0.1. */
+  ip?: string;
   constructor(private app: FastifyInstance) {}
 
   async req(method: 'GET' | 'POST' | 'PUT' | 'PATCH', url: string, body?: unknown, headers: Record<string, string> = {}) {
     const res = await this.app.inject({
       method,
+      remoteAddress: this.ip,
       url: `/api${url}`,
       headers: { origin: ORIGIN, ...(this.cookie ? { cookie: this.cookie } : {}), ...headers },
       payload: body === undefined ? undefined : (body as object),

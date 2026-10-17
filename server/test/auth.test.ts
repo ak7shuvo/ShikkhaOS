@@ -50,6 +50,8 @@ describe('authentication', () => {
     const locked = await new Client(h.app).login(email, PASSWORD);
     expect(locked.status).toBe(401);
     await h.owner.query(`UPDATE users SET locked_until = NULL, failed_login_count = 0 WHERE email = $1`, [email]);
+    expect((await new Client(h.app).login(email, PASSWORD)).status).toBe(401); // the per-address lock is separate
+    await h.owner.query(`DELETE FROM login_attempts WHERE user_id = (SELECT id FROM users WHERE email = $1)`, [email]);
     expect((await new Client(h.app).login(email, PASSWORD)).status).toBe(200);
   });
 

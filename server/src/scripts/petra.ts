@@ -10,7 +10,7 @@ import { createPool } from '../db.js';
 import { todayIn } from '../entitlements.js';
 import { assertOperatorUrls } from '../production-guards.js';
 import { runtimeDbTls } from '../tls.js';
-import { exportSchool, finalizeOffboarding, resetSchoolAccountPassword, restoreDump, startOffboarding } from '../operations.js';
+import { exportSchool, finalizeOffboarding, resetSchoolAccountPassword, unlockSchoolAccount, restoreDump, startOffboarding } from '../operations.js';
 import { hashPassword, PASSWORD_MIN_LENGTH } from '../passwords.js';
 import { DEFAULT_MAINTENANCE_DBS, checkDatabaseAcls, hardenDatabaseAccess, type AclSpec } from '../db-access.js';
 import { checkSchoolHealth, migrateSchool, provisionSchool, reencryptAllSecrets, rotateSchoolSecret, urlForDb, type ProvisionDeps } from '../provisioning.js';
@@ -46,7 +46,7 @@ if (cmd === 'generate-master-key') {
 }
 if (!cmd || cmd === 'help')
   die(
-    'commands: register provision migrate health rotate-secret reencrypt-secrets sweep export restore offboard-start offboard-finalize admin-reset migrate-to-dedicated rollback-to-shared import-platform-admins platform-admin-create build-profile seed-demo generate-master-key generate-signing-key harden-db-access migration-inspect migration-recover',
+    'commands: register provision migrate health rotate-secret reencrypt-secrets sweep export restore offboard-start offboard-finalize admin-reset unlock migrate-to-dedicated rollback-to-shared import-platform-admins platform-admin-create build-profile seed-demo generate-master-key generate-signing-key harden-db-access migration-inspect migration-recover',
   );
 
 const config = loadConfig(); // throws a non-sensitive error for unsafe production configuration
@@ -216,6 +216,12 @@ try {
       const e = await school(positional[0]);
       const r = await resetSchoolAccountPassword(deps, e.id, positional[1] ?? die('usage: admin-reset <slug> <email>'));
       console.log(`New password for ${positional[1]} (shown ONCE): ${r.password}`);
+      break;
+    }
+    case 'unlock': {
+      const e = await school(positional[0]);
+      await unlockSchoolAccount(deps, e.id, positional[1] ?? die('usage: unlock <slug> <email>'));
+      console.log(`${positional[1]}: login locks cleared.`);
       break;
     }
     case 'migrate-to-dedicated': {

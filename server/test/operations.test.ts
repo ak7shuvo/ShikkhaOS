@@ -5,7 +5,15 @@ import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { writeBuildProfile } from '../src/build-profile.js';
 import { addDays } from '../src/entitlements.js';
-import { dropScratchDatabase, exportSchool, finalizeOffboarding, resetSchoolAccountPassword, restoreDump, startOffboarding } from '../src/operations.js';
+import {
+  dropScratchDatabase,
+  exportSchool,
+  finalizeOffboarding,
+  resetSchoolAccountPassword,
+  restoreDump,
+  startOffboarding,
+  unlockSchoolAccount,
+} from '../src/operations.js';
 import { dbNameFor, provisionSchool, roleNameFor, urlForDb } from '../src/provisioning.js';
 import { controlFixture, registerNew, scratchDbName, today, type ControlFixture } from './fixtures.js';
 import { Client, harness, uniqueCode, type Harness } from './helpers.js';
@@ -172,6 +180,16 @@ describe('support and build configuration', () => {
     expect((await new Client(h.app).login(A.adminEmail, A.pw, A.slug)).status).toBe(401);
     expect((await new Client(h.app).login(A.adminEmail, password, A.slug)).status).toBe(200);
     await expect(resetSchoolAccountPassword(f.deps, A.id, 'nobody@example.test')).rejects.toThrow(/no such account/);
+  });
+
+  it('operator unlock clears per-address and account-wide login locks and is audited', async () => {
+    const A = await school('sup-unlock');
+    for (let i = 0; i < 5; i++) await new Client(h.app).login(A.adminEmail, 'bad-password-xx', A.slug);
+    expect((await new Client(h.app).login(A.adminEmail, A.pw, A.slug)).status).toBe(401); // this address is locked
+    await unlockSchoolAccount(f.deps, A.id, A.adminEmail);
+    expect((await new Client(h.app).login(A.adminEmail, A.pw, A.slug)).status).toBe(200);
+    expect((await f.control.query(`SELECT 1 FROM platform_audit_events WHERE school_id = $1 AND action = 'school.account_unlocked'`, [A.id])).rowCount).toBe(1);
+    await expect(unlockSchoolAccount(f.deps, A.id, 'nobody@example.test')).rejects.toThrow(/no such account/);
   });
 
   it('writes non-secret build profiles for branded clients and nothing else', async () => {

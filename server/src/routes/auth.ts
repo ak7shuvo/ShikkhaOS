@@ -69,18 +69,32 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       await burnPasswordCheck(body.password);
       throw fail();
     }
-    const locked = found.locked_until && new Date(found.locked_until) > new Date();
+    // Two limits: LOGIN_MAX_FAILURES per (account, source address) so an attacker only locks themself out, and a much higher
+    // LOGIN_ACCOUNT_MAX_FAILURES across all addresses for distributed guessing (operator `petra unlock` clears both).
+    const ip = (req.ip || 'unknown').slice(0, 64);
+    const pairLocked = await withContext(
+      pool,
+      { userId: found.id },
+      async (tx) => (await tx.query(`SELECT 1 FROM login_attempts WHERE user_id = $1 AND ip = $2 AND locked_until > now()`, [found.id, ip])).rowCount === 1,
+    );
+    const locked = pairLocked || Boolean(found.locked_until && new Date(found.locked_until) > new Date());
     const ok = await verifyPassword(found.password_hash, body.password);
     if (locked || found.status !== 'active' || !ok) {
       if (!ok && !locked && found.status === 'active') {
-        await withContext(pool, { userId: found.id }, (tx) =>
-          tx.query(
+        await withContext(pool, { userId: found.id }, async (tx) => {
+          await tx.query(
+            `INSERT INTO login_attempts (user_id, ip, failures, locked_until) VALUES ($1,$2,1, CASE WHEN 1 >= $3 THEN now() + make_interval(mins => $4) END)
+             ON CONFLICT (user_id, ip) DO UPDATE SET failures = login_attempts.failures + 1, last_failure_at = now(),
+               locked_until = CASE WHEN login_attempts.failures + 1 >= $3 THEN now() + make_interval(mins => $4) ELSE login_attempts.locked_until END`,
+            [found.id, ip, config.LOGIN_MAX_FAILURES, config.LOGIN_LOCK_MINUTES],
+          );
+          await tx.query(
             `UPDATE users SET failed_login_count = failed_login_count + 1,
                locked_until = CASE WHEN failed_login_count + 1 >= $2 THEN now() + make_interval(mins => $3) ELSE locked_until END
              WHERE id = $1`,
-            [found.id, config.LOGIN_MAX_FAILURES, config.LOGIN_LOCK_MINUTES],
-          ),
-        );
+            [found.id, config.LOGIN_ACCOUNT_MAX_FAILURES, config.LOGIN_LOCK_MINUTES],
+          );
+        });
       }
       throw fail();
     }
@@ -94,6 +108,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       );
       if (!ms.rows[0]) return false;
       await tx.query(`UPDATE users SET failed_login_count = 0, locked_until = NULL, last_login_at = now() WHERE id = $1`, [found.id]);
+      await tx.query(`DELETE FROM login_attempts WHERE user_id = $1 AND ip = $2`, [found.id, ip]);
       await tx.query(
         `INSERT INTO sessions (token_hash, user_id, active_school_id, expires_at, user_agent)
          VALUES ($1,$2,$3, now() + make_interval(hours => $4), $5)`,
