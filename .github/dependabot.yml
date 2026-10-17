@@ -1,0 +1,17 @@
+version: 2
+updates:
+  # Workflow actions are pinned to full commit SHAs; Dependabot proposes SHA bumps as reviewable PRs.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  # npm workspaces (server, web, e2e). Majors arrive as separate PRs so that vite/vitest upgrades can be reviewed on their own.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]

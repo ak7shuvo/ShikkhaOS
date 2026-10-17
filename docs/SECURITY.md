@@ -17,7 +17,7 @@ See [DATABASE_ISOLATION.md](DATABASE_ISOLATION.md) for roles, secrets and the ne
 
 - Per-school accounts: `POST /api/auth/login` `{school, email, password}`. Passwords: **argon2id** (`@node-rs/argon2` defaults), minimum 10 characters when set through the API. Unknown school, unready school, unknown e-mail, wrong password, disabled and locked accounts all return the identical `401 INVALID_CREDENTIALS`, with an Argon2 verification burned for unknown users (timing equalisation). A blocked subscription or suspended school is revealed **only after** the credentials verified.
 - Cookie `sid=<school id>.<256-bit random token>`: `HttpOnly`, `SameSite=Strict`, `Secure` (default in production; production refuses `COOKIE_SECURE=false`). Only the SHA-256 of the token is stored, in the school's own database. The school id prefix is a routing hint: the session must exist in that school's database **and** its `active_school_id` must equal the registry id (forged prefixes tested).
-- Sessions: absolute TTL `SESSION_TTL_HOURS` (12), **idle timeout** `SESSION_IDLE_MINUTES` (120), at most `MAX_SESSIONS_PER_USER` (5; oldest evicted), logout deletes the row, `POST /api/auth/change-password` verifies the current password and revokes all other sessions. Membership/user/school/subscription changes take effect on the next request (subject to the registry cache TTL across instances).
+- Sessions: absolute TTL `SESSION_TTL_HOURS` (12), **idle timeout** `SESSION_IDLE_MINUTES` (120), at most `MAX_SESSIONS_PER_USER` (5; oldest evicted), logout deletes the row, `POST /api/auth/change-password` verifies the current password (wrong attempts count toward the same lockout as login) and revokes all other sessions. A school cannot lose its last active `school_admin`, and administrators cannot suspend or remove their own membership (409 `LAST_ADMIN` / `CANNOT_CHANGE_SELF`). Membership/user/school/subscription changes take effect on the next request (subject to the registry cache TTL across instances).
 - **Rate limiting:** `@fastify/rate-limit` per client IP: `LOGIN_RATE_LIMIT_PER_MINUTE` (10) on login endpoints, `API_RATE_LIMIT_PER_MINUTE` globally, 60/min on public endpoints. **Trusted proxy:** `TRUST_PROXY` empty means `X-Forwarded-For` is ignored (a spoofed header cannot evade limits — tested); a number trusts exactly that many proxy hops from the TCP peer; otherwise a list of proxy IPs/CIDRs. Counters are in process memory.
 - **Lockout:** `LOGIN_MAX_FAILURES` (5) consecutive failures lock the account for `LOGIN_LOCK_MINUTES` (15), per school database / control plane.
 - Platform admins: control-plane accounts with the same hashing, lockout, idle/absolute timeouts and session cap; separate cookie scoped to `/api/platform`.
@@ -25,7 +25,7 @@ See [DATABASE_ISOLATION.md](DATABASE_ISOLATION.md) for roles, secrets and the ne
 
 ## CSRF / browser hardening
 
-`SameSite=Strict` cookies, plus rejection of non-GET requests whose `Origin` is not in `ALLOWED_ORIGINS`. `@fastify/helmet` headers (CSP disabled for the JSON API; set one on the static host). Responses under `/api` carry `Cache-Control: no-store`.
+`SameSite=Strict` cookies, plus rejection of non-GET requests whose `Origin` is not in `ALLOWED_ORIGINS`. `@fastify/helmet` headers (CSP disabled for the JSON API). The static host must send the CSP/HSTS/framing headers in `deploy/web-security-headers.json`; CI verifies that the built app runs under them, not that your host sends them. Responses under `/api` carry `Cache-Control: no-store`.
 
 ## Authorization
 

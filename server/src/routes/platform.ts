@@ -114,7 +114,7 @@ export async function platformRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // Registration only records the school. The database is created by the operator-run provisioning workflow
-  // (`npm run school:provision`), which holds the privileged credential — the API process never does.
+  // (`npm run petra -- provision <slug>`), which holds the privileged credential — the API process never does.
   app.post('/platform/schools', guard, async (req, reply) => {
     const b = parse(
       z.object({
@@ -143,7 +143,7 @@ export async function platformRoutes(app: FastifyInstance): Promise<void> {
         throw new AppError(400, 'INVALID_SLUG', 'Slug is invalid or reserved');
       throw e;
     }
-    return reply.status(201).send({ id: r.id, slug: b.slug, status: 'requested', next_step: 'An operator must run: npm run school:provision -- ' + b.slug });
+    return reply.status(201).send({ id: r.id, slug: b.slug, status: 'requested', next_step: 'An operator must run: npm run petra -- provision ' + b.slug });
   });
 
   app.get('/platform/schools/:id', guard, async (req) => {

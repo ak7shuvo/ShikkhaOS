@@ -66,13 +66,13 @@ jobs:
           echo "::add-mask::$sharedpw"
           echo "::add-mask::$controlpw"
           masterkey=$(openssl rand -base64 32)
-          echo "::add-mask::$masterkey" # before it is written to GITHUB_ENV, i.e. before any step can print its environment
+          echo "::add-mask::$masterkey" # before it is written to the env file below
 
           docker run -d --name petra-ci-pg \
             -e POSTGRES_PASSWORD="$pgpass" \
             -p 127.0.0.1:${PGPORT_TEST}:5432 \
             -v "$certs:/certs:ro" \
-            postgres:16 \
+            postgres:16@sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d \
             -c ssl=on -c ssl_cert_file=/certs/server.crt -c ssl_key_file=/certs/server.key
           for i in $(seq 1 60); do
             PGPASSWORD="$pgpass" psql -h 127.0.0.1 -p "$PGPORT_TEST" -U postgres -d postgres -Atc 'select 1' >/dev/null 2>&1 && break
@@ -84,21 +84,28 @@ jobs:
             -c 'CREATE TABLE marker (cluster_id text NOT NULL)' \
             -c "INSERT INTO marker VALUES ('$clusterid')"
 
+          # The throw-away credentials go to a mode-600 file that only the steps which need them source (server tests, browser
+          # E2E). They are deliberately NOT written to GITHUB_ENV, so `npm ci`, `playwright install` and every other step never
+          # sees them.
           base="postgres://%s@127.0.0.1:${PGPORT_TEST}/%s"
+          envfile="$RUNNER_TEMP/petra-test-env"
+          umask 077
           {
-            echo "PETRA_TEST_CLUSTER_ID=$clusterid"
-            echo "TEST_PROVISIONER_DATABASE_URL=$(printf "$base" "postgres:$pgpass" postgres)"
-            echo "TEST_DATABASE_URL=$(printf "$base" "shikkha_app:$sharedpw" shikkhaos_test)"
-            echo "TEST_MIGRATION_DATABASE_URL=$(printf "$base" "postgres:$pgpass" shikkhaos_test)"
-            echo "TEST_CONTROL_DATABASE_URL=$(printf "$base" "petra_control_app:$controlpw" petra_control_test)"
-            echo "TEST_CONTROL_MIGRATION_DATABASE_URL=$(printf "$base" "postgres:$pgpass" petra_control_test)"
-            echo "PETRA_TEST_TLS_CA=$certs/ca.crt"
-            echo "PETRA_TEST_TLS_UNTRUSTED_CA=$certs/untrusted-ca.crt"
-            echo "PETRA_MASTER_KEY=$masterkey"
-          } >> "$GITHUB_ENV"
+            echo "PETRA_TEST_CLUSTER_ID='$clusterid'"
+            echo "TEST_PROVISIONER_DATABASE_URL='$(printf "$base" "postgres:$pgpass" postgres)'"
+            echo "TEST_DATABASE_URL='$(printf "$base" "shikkha_app:$sharedpw" shikkhaos_test)'"
+            echo "TEST_MIGRATION_DATABASE_URL='$(printf "$base" "postgres:$pgpass" shikkhaos_test)'"
+            echo "TEST_CONTROL_DATABASE_URL='$(printf "$base" "petra_control_app:$controlpw" petra_control_test)'"
+            echo "TEST_CONTROL_MIGRATION_DATABASE_URL='$(printf "$base" "postgres:$pgpass" petra_control_test)'"
+            echo "PETRA_TEST_TLS_CA='$certs/ca.crt'"
+            echo "PETRA_TEST_TLS_UNTRUSTED_CA='$certs/untrusted-ca.crt'"
+            echo "PETRA_MASTER_KEY='$masterkey'"
+          } > "$envfile"
 
       - name: Server tests (real PostgreSQL, includes the TLS trusted-CA tests)
-        run: npm run test -w server
+        run: |
+          set -a; . "$RUNNER_TEMP/petra-test-env"; set +a
+          npm run test -w server
 
       - name: Web tests
         run: npm run test -w web
@@ -112,11 +119,14 @@ jobs:
       # Browser smoke test: school-slug login, grace-period banner, logout, old cookie rejected. e2e/prepare.ts and
       # e2e/playwright.config.ts both run the same disposable-cluster guard as the server tests (marker, loopback, test names).
       - name: Browser smoke E2E
-        run: npm run test -w e2e
+        run: |
+          set -a; . "$RUNNER_TEMP/petra-test-env"; set +a
+          npm run test -w e2e
 
       # Negative control: with the logout request dropped the very same test MUST fail, on the logout assertions.
       - name: Browser smoke E2E negative control (broken logout must be detected)
         run: |
+          set -a; . "$RUNNER_TEMP/petra-test-env"; set +a
           if npm run test:negative -w e2e > "$RUNNER_TEMP/e2e-negative.log" 2>&1; then
             echo "::error::negative control passed although logout was broken; the E2E would not catch a logout regression"
             exit 1
@@ -130,10 +140,13 @@ jobs:
         run: sudo apt-get install -y -qq xvfb
 
       - name: Desktop shell smoke (branded profile build, development launch)
-        run: npm run test:desktop -w e2e
+        run: |
+          set -a; . "$RUNNER_TEMP/petra-test-env"; set +a
+          npm run test:desktop -w e2e
 
       - name: Desktop shell smoke negative control (broken logout must be detected)
         run: |
+          set -a; . "$RUNNER_TEMP/petra-test-env"; set +a
           if npm run test:desktop:negative -w e2e > "$RUNNER_TEMP/desktop-negative.log" 2>&1; then
             echo "::error::desktop negative control passed although logout was broken"
             exit 1
@@ -142,7 +155,9 @@ jobs:
           echo "desktop negative control failed for the intended reason"
 
       - name: Desktop shell smoke against the PACKAGED app (fuses applied)
-        run: npm run test:desktop:packaged -w e2e
+        run: |
+          set -a; . "$RUNNER_TEMP/petra-test-env"; set +a
+          npm run test:desktop:packaged -w e2e
 
       - name: Build the Linux artifacts (AppImage + tar.gz, generic build, placeholder API origin)
         run: SHIKKHAOS_RELEASE=1 npm run package:linux -w desktop -- --api https://api.example.test
@@ -162,4 +177,7 @@ jobs:
 
       - name: Stop the test database
         if: always()
-        run: docker rm -f petra-ci-pg || true
+        run: |
+          docker rm -f petra-ci-pg || true
+          rm -f "$RUNNER_TEMP/petra-test-env"
+          true
