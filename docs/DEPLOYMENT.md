@@ -69,12 +69,12 @@ Secrets: inject `PETRA_MASTER_KEY` and database URLs from a secret manager or a 
 
 ## Branded desktop and Android clients
 
-**Not built.** What exists: one web codebase that reads `VITE_SCHOOL_SLUG`, `VITE_APP_NAME`, `VITE_API_BASE_URL` at build time, hides the school field when a slug is fixed, applies server-provided branding, and `petra build-profile` which writes `builds/<slug>/` with `profile.json`, `web.env`, `capacitor.config.json` (if an Android profile exists) and `tauri.<platform>.conf.json` for each desktop profile.
+**Desktop (Linux): foundation built; see [DESKTOP.md](DESKTOP.md).** An Electron shell around the unchanged web UI produces a school-branded AppImage/tar.gz from the existing `petra build-profile` output; sessions are handled by the shell's main process, so the API's cookie and CSRF rules are unchanged. Not done: Windows `.exe`, signing, auto-update, offline mode.
 
-What is still required before any EXE, Linux package or APK can be claimed:
+**Android: not built.** What exists: `petra build-profile` emits `capacitor.config.json`; the web codebase reads `VITE_SCHOOL_SLUG`, `VITE_APP_NAME`, `VITE_API_BASE_URL`. Still required before an APK/AAB can be claimed:
 
-1. A Capacitor (Android) project and a Tauri (or Electron) project wrapping `web/dist` — neither exists in this repository.
-2. Real builds with the generated configuration, code signing (Android keystore, Windows signing certificate), and installation + launch tests on devices/VMs.
-3. A **token-based session mode** for native origins: the `SameSite=Strict` cookie does not work from `capacitor://` / `tauri://` origins, and `VITE_API_BASE_URL` pointing at a different site is not usable with the current cookie model.
+1. A Capacitor project wrapping `web/dist` (does not exist yet).
+2. Real builds with the generated configuration, an Android keystore, and installation + launch tests on devices.
+3. A session solution for the mobile WebView: the `SameSite=Strict` cookie does not work from `capacitor://` origins (the desktop shell avoids this with a main-process HTTP client; mobile needs a native HTTP plugin or a token mode designed together with the platform-admin MFA work).
 4. Update/min-version handling in the client using `GET /api/public/app-config/:slug`.
-5. Offline mode (Phase 3; design in [ARCHITECTURE.md](ARCHITECTURE.md#designed-for-later-phases--not-implemented)).
+5. Offline mode (design in [ARCHITECTURE.md](ARCHITECTURE.md#designed-for-later-phases--not-implemented)).
