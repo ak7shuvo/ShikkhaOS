@@ -65,13 +65,19 @@ const schema = z.object({
     .max(24 * 30)
     .default(12),
   COOKIE_SECURE: bool.optional(),
+  // Platform administrators must use TOTP MFA. Defaults to true in production (and may not be false there), false elsewhere.
+  PLATFORM_MFA_REQUIRED: bool.optional(),
   LOGIN_MAX_FAILURES: z.coerce.number().int().min(3).max(20).default(5),
   LOGIN_LOCK_MINUTES: z.coerce.number().int().min(1).max(1440).default(15),
   LOGIN_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10000).default(10),
   API_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(10).max(100000).default(600),
 });
 
-export type Config = Omit<z.infer<typeof schema>, 'COOKIE_SECURE' | 'TRUST_PROXY'> & { COOKIE_SECURE: boolean; TRUST_PROXY: boolean | number | string[] };
+export type Config = Omit<z.infer<typeof schema>, 'COOKIE_SECURE' | 'TRUST_PROXY' | 'PLATFORM_MFA_REQUIRED'> & {
+  COOKIE_SECURE: boolean;
+  TRUST_PROXY: boolean | number | string[];
+  PLATFORM_MFA_REQUIRED: boolean;
+};
 
 /** Maps the TRUST_PROXY string to Fastify's `trustProxy` option. */
 export function parseTrustProxy(v: string): boolean | number | string[] {
@@ -96,10 +102,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     // Collect every problem so an operator fixes the configuration in one pass. Messages name settings, never values.
     const problems: string[] = [];
     if (!cookieSecure) problems.push('COOKIE_SECURE must be true in production');
+    if (c.PLATFORM_MFA_REQUIRED === false) problems.push('PLATFORM_MFA_REQUIRED must not be false in production');
     if (c.ALLOWED_ORIGINS.some((o) => !o.startsWith('https://'))) problems.push('ALLOWED_ORIGINS must be https:// origins in production');
     problems.push(...trustProxyProblems(c.TRUST_PROXY));
     problems.push(...productionDbTlsProblems(c));
     if (problems.length) throw new Error(`Invalid production configuration: ${problems.join('; ')}`);
   }
-  return { ...c, COOKIE_SECURE: cookieSecure, TRUST_PROXY: parseTrustProxy(c.TRUST_PROXY) };
+  return {
+    ...c,
+    COOKIE_SECURE: cookieSecure,
+    PLATFORM_MFA_REQUIRED: c.PLATFORM_MFA_REQUIRED ?? c.NODE_ENV === 'production',
+    TRUST_PROXY: parseTrustProxy(c.TRUST_PROXY),
+  };
 }

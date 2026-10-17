@@ -13,6 +13,7 @@ import { academicRoutes } from './routes/academic.js';
 import { authRoutes } from './routes/auth.js';
 import { guardianRoutes } from './routes/guardian.js';
 import { platformRoutes } from './routes/platform.js';
+import { platformAuthRoutes } from './routes/platform-auth.js';
 import { publicRoutes } from './routes/public.js';
 import { resultRoutes } from './routes/results.js';
 import { schoolRoutes } from './routes/school.js';
@@ -52,6 +53,7 @@ export async function buildApp(config: Config, control: Db, opts: AppOptions = {
   const deps: AppDeps = {
     config,
     control,
+    secrets,
     router,
     entitlements,
     now,
@@ -111,6 +113,7 @@ export async function buildApp(config: Config, control: Db, opts: AppOptions = {
 
   app.get('/api/health', async () => ({ status: 'ok' }));
   await app.register(authRoutes, { prefix: '/api' });
+  await app.register(platformAuthRoutes, { prefix: '/api' });
   await app.register(platformRoutes, { prefix: '/api' });
   await app.register(publicRoutes, { prefix: '/api' });
   await app.register(schoolRoutes, { prefix: '/api' });

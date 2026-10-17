@@ -11,10 +11,10 @@ import { todayIn } from '../entitlements.js';
 import { assertOperatorUrls } from '../production-guards.js';
 import { runtimeDbTls } from '../tls.js';
 import { exportSchool, finalizeOffboarding, resetSchoolAccountPassword, restoreDump, startOffboarding } from '../operations.js';
-import { hashPassword, PASSWORD_MIN_LENGTH } from '../passwords.js';
+import { hashPassword, PLATFORM_PASSWORD_MIN_LENGTH } from '../passwords.js';
 import { DEFAULT_MAINTENANCE_DBS, checkDatabaseAcls, hardenDatabaseAccess, type AclSpec } from '../db-access.js';
 import { checkSchoolHealth, migrateSchool, provisionSchool, reencryptAllSecrets, rotateSchoolSecret, urlForDb, type ProvisionDeps } from '../provisioning.js';
-import { registerSchool } from '../registry.js';
+import { platformAudit, registerSchool } from '../registry.js';
 import { SecretBox, generateMasterKey, loadMasterKeys } from '../secrets.js';
 import { seedSchool } from '../seed-data.js';
 import {
@@ -46,7 +46,7 @@ if (cmd === 'generate-master-key') {
 }
 if (!cmd || cmd === 'help')
   die(
-    'commands: register provision migrate health rotate-secret reencrypt-secrets sweep export restore offboard-start offboard-finalize admin-reset migrate-to-dedicated rollback-to-shared import-platform-admins platform-admin-create build-profile seed-demo generate-master-key generate-signing-key harden-db-access migration-inspect migration-recover',
+    'commands: register provision migrate health rotate-secret reencrypt-secrets sweep export restore offboard-start offboard-finalize admin-reset migrate-to-dedicated rollback-to-shared import-platform-admins platform-admin-create platform-admin-mfa-reset build-profile seed-demo generate-master-key generate-signing-key harden-db-access migration-inspect migration-recover',
   );
 
 const config = loadConfig(); // throws a non-sensitive error for unsafe production configuration
@@ -250,13 +250,28 @@ try {
     case 'platform-admin-create': {
       const email = process.env.PLATFORM_ADMIN_EMAIL;
       const pw = process.env.PLATFORM_ADMIN_PASSWORD;
-      if (!email || !pw || pw.length < PASSWORD_MIN_LENGTH)
-        die(`PLATFORM_ADMIN_EMAIL and PLATFORM_ADMIN_PASSWORD (min ${PASSWORD_MIN_LENGTH} chars) are required`);
+      if (!email || !pw || pw.length < PLATFORM_PASSWORD_MIN_LENGTH)
+        die(`PLATFORM_ADMIN_EMAIL and PLATFORM_ADMIN_PASSWORD (min ${PLATFORM_PASSWORD_MIN_LENGTH} chars) are required`);
       await control.query(`INSERT INTO platform_admins (email, password_hash, full_name) VALUES ($1,$2,'Platform Administrator')`, [
         email,
         await hashPassword(pw!),
       ]);
       console.log(`Platform admin ${email} created.`);
+      break;
+    }
+    case 'platform-admin-mfa-reset': {
+      // Lost authenticator AND recovery codes. Operator-only (needs the control-plane credential); the administrator must enrol again at next login.
+      const email = positional[0] ?? die('usage: platform-admin-mfa-reset <email>');
+      const a = (await control.query(`SELECT id FROM platform_admins WHERE email = $1`, [email])).rows[0];
+      if (!a) die('no such platform administrator');
+      await control.query(
+        `UPDATE platform_admins SET mfa_secret_enc = NULL, mfa_pending_secret_enc = NULL, mfa_enabled_at = NULL, mfa_last_step = NULL WHERE id = $1`,
+        [a.id],
+      );
+      await control.query(`UPDATE platform_recovery_codes SET used_at = now() WHERE admin_id = $1 AND used_at IS NULL`, [a.id]);
+      await control.query(`DELETE FROM platform_sessions WHERE admin_id = $1`, [a.id]);
+      await platformAudit(control, { actorId: null, action: 'platform.mfa_reset', entityType: 'platform_admin', entityId: a.id, metadata: { via: 'cli' } });
+      console.log(`MFA reset for ${email}; all sessions revoked. The administrator must enrol again at the next sign-in.`);
       break;
     }
     case 'build-profile': {

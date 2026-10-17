@@ -3,6 +3,7 @@ import type { ZodTypeAny, z } from 'zod';
 import type { Config } from './config.js';
 import { withContext, type Db, type Tx } from './db.js';
 import type { EntitlementService } from './entitlement-service.js';
+import type { SecretBox } from './secrets.js';
 import { READ_ONLY_SAFE_METHODS, type Entitlement } from './entitlements.js';
 import { AppError, badRequest, forbidden, unauthorized } from './errors.js';
 import { hashToken } from './passwords.js';
@@ -31,17 +32,27 @@ export interface AuthContext {
   memberships: { school_id: string; role: string; school_name: string }[];
 }
 
+/**
+ * 'ok'                  fully authenticated (second factor presented for this session, or MFA not required and not enrolled)
+ * 'enrolment_required'  password accepted, MFA is mandatory but not set up yet: only enrolment/logout/me are allowed
+ * 'mfa_required'        MFA is enrolled but this session never presented the code (never issued by login; defensive)
+ */
+export type PlatformMfaState = 'ok' | 'enrolment_required' | 'mfa_required';
+
 export interface PlatformAuth {
   adminId: string;
   email: string;
   fullName: string;
   sessionId: string;
   tokenHash: string;
+  mfaEnabled: boolean;
+  mfaState: PlatformMfaState;
 }
 
 export interface AppDeps {
   config: Config;
   control: Db;
+  secrets: SecretBox;
   router: TenantRouter;
   entitlements: EntitlementService;
   rolePermissions: (entry: RegistryEntry, pool: Db) => Promise<RolePermissionMap>;
@@ -176,7 +187,8 @@ export async function authenticatePlatform(app: FastifyInstance, req: FastifyReq
   const tokenHash = hashToken(token);
   const { control, config } = app.deps;
   const { rows } = await control.query(
-    `SELECT s.id AS session_id, s.expires_at, s.last_seen_at, a.id AS admin_id, a.email::text AS email, a.full_name, a.status
+    `SELECT s.id AS session_id, s.expires_at, s.last_seen_at, s.mfa_verified, a.id AS admin_id, a.email::text AS email, a.full_name, a.status,
+            (a.mfa_enabled_at IS NOT NULL) AS mfa_enabled
        FROM platform_sessions s JOIN platform_admins a ON a.id = s.admin_id WHERE s.token_hash = $1`,
     [tokenHash],
   );
@@ -184,12 +196,24 @@ export async function authenticatePlatform(app: FastifyInstance, req: FastifyReq
   if (!s || new Date(s.expires_at) <= new Date() || s.status !== 'active') throw unauthorized('Session invalid or expired');
   if (Date.now() - new Date(s.last_seen_at).getTime() > config.SESSION_IDLE_MINUTES * 60_000) throw unauthorized('Session expired due to inactivity');
   await control.query(`UPDATE platform_sessions SET last_seen_at = now() WHERE id = $1 AND last_seen_at < now() - interval '1 minute'`, [s.session_id]);
-  return { adminId: s.admin_id, email: s.email, fullName: s.full_name, sessionId: s.session_id, tokenHash };
+  const mfaState: PlatformMfaState = s.mfa_enabled ? (s.mfa_verified ? 'ok' : 'mfa_required') : config.PLATFORM_MFA_REQUIRED ? 'enrolment_required' : 'ok';
+  return { adminId: s.admin_id, email: s.email, fullName: s.full_name, sessionId: s.session_id, tokenHash, mfaEnabled: s.mfa_enabled, mfaState };
 }
 
-export function platformAuthz(app: FastifyInstance) {
+/**
+ * Platform routes need a fully authenticated session. `allowIncomplete` is only for the handful of routes an administrator must be able
+ * to reach before MFA is complete (identity, logout, enrolment); every other route answers 403 until the second factor is in place.
+ */
+export function platformAuthz(app: FastifyInstance, opts: { allowIncomplete?: boolean } = {}) {
   return async (req: FastifyRequest): Promise<void> => {
-    req.platformAuth = await authenticatePlatform(app, req);
+    const a = await authenticatePlatform(app, req);
+    req.platformAuth = a;
+    if (opts.allowIncomplete || a.mfaState === 'ok') return;
+    throw new AppError(
+      403,
+      a.mfaState === 'enrolment_required' ? 'MFA_ENROLMENT_REQUIRED' : 'MFA_REQUIRED',
+      a.mfaState === 'enrolment_required' ? 'Set up two-factor authentication to continue' : 'Two-factor authentication is required',
+    );
   };
 }
 

@@ -23,3 +23,6 @@ export const newSessionToken = () => randomBytes(32).toString('base64url');
 export const hashToken = (t: string) => createHash('sha256').update(t).digest('hex');
 
 export const PASSWORD_MIN_LENGTH = 10;
+
+/** Platform administrators control every school, so their minimum is longer than for school users. */
+export const PLATFORM_PASSWORD_MIN_LENGTH = 12;
