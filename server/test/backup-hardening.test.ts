@@ -307,3 +307,65 @@ describe('offboarding is safely retryable after a restore-verification failure',
     expect(meta.manifest_signed).toBe(true);
   });
 });
+
+describe('encrypted backups at rest', () => {
+  const ENC = Buffer.alloc(32, 5);
+  const enc = (): ProvisionDeps => ({ ...f.deps, backupEncryptionKey: ENC, backupSigningKey: KEY });
+
+  it('writes only ciphertext, restores and verifies with the key, and refuses without or with a wrong key', async () => {
+    const A = await school('bk-enc');
+    await A.admin.post('/classes', { name: 'Secret Class Name' });
+    const out = tmp();
+    const { manifestPath, manifest } = await exportSchool(enc(), A.id, out);
+    expect(manifest.encryption).toEqual({ alg: 'aes-256-gcm-chunked', version: 1 });
+    expect(manifest.dump_file.endsWith('.dump.enc')).toBe(true);
+    expect(fs.readdirSync(out).filter((n) => n.endsWith('.dump'))).toEqual([]); // no plaintext dump left behind
+    expect(fs.readFileSync(dumpOf(manifestPath)).includes('Secret Class Name')).toBe(false);
+    expect(manifest.signature).toBeDefined();
+
+    const scratch = await scratchDbName('en');
+    expect(await restoreDump(enc(), manifestPath, scratch)).toMatchObject({ ok: true, signature: 'verified' });
+    const c = new pg.Client({ connectionString: urlForDb(f.deps.adminUrl, scratch) });
+    await c.connect();
+    try {
+      expect((await c.query(`SELECT 1 FROM classes WHERE name = 'Secret Class Name'`)).rowCount).toBe(1); // decrypted content is really there
+    } finally {
+      await c.end();
+    }
+    await drop(scratch);
+
+    const s2 = await scratchDbName('en2');
+    await expect(restoreDump({ ...enc(), backupEncryptionKey: undefined }, manifestPath, s2)).rejects.toThrow(/encrypted but no backup encryption key/);
+    await expect(restoreDump({ ...enc(), backupEncryptionKey: Buffer.alloc(32, 6) }, manifestPath, s2)).rejects.toThrow(/decryption failed/);
+    expect(await exists(s2)).toBe(false); // nothing was created
+    expect(fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('petra-restore-'))).toEqual([]); // scratch plaintext removed
+  });
+
+  it('the encryption marker is covered by the signature (cannot be stripped to force a plaintext restore)', async () => {
+    const A = await school('bk-enc2');
+    const { manifestPath } = await exportSchool(enc(), A.id, tmp());
+    const m = readManifest(manifestPath);
+    const { encryption: _e, ...stripped } = m;
+    writeManifest(manifestPath, stripped);
+    await expect(restoreDump(enc(), manifestPath, await scratchDbName('en3'))).rejects.toThrow(/signature is invalid/);
+  });
+
+  it('a modified ciphertext fails the manifest checksum before anything is decrypted', async () => {
+    const A = await school('bk-enc3');
+    const { manifestPath } = await exportSchool(enc(), A.id, tmp());
+    const file = dumpOf(manifestPath);
+    const b = fs.readFileSync(file);
+    b[b.length - 20] = b[b.length - 20]! ^ 1;
+    fs.writeFileSync(file, b);
+    await expect(restoreDump(enc(), manifestPath, await scratchDbName('en4'))).rejects.toThrow(/checksum/);
+  });
+
+  it('unencrypted backups made before the key existed still restore', async () => {
+    const A = await school('bk-enc4');
+    const { manifestPath } = await exportSchool(f.deps, A.id, tmp());
+    expect(readManifest(manifestPath).encryption).toBeUndefined();
+    const scratch = await scratchDbName('en5');
+    expect(await restoreDump({ ...f.deps, backupEncryptionKey: ENC }, manifestPath, scratch)).toMatchObject({ ok: true });
+    await drop(scratch);
+  });
+});

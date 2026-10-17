@@ -27,6 +27,8 @@ export interface ProvisionDeps {
   schoolSsl?: false | TlsOptions;
   /** HMAC key for backup manifests (PETRA_BACKUP_SIGNING_KEY). Keep it separate from the backups and from the master key. */
   backupSigningKey?: Buffer;
+  /** AES-256 key for encrypting dumps at rest (PETRA_BACKUP_ENCRYPTION_KEY). Keep it off-host, away from the backups; losing it loses them. */
+  backupEncryptionKey?: Buffer;
   /** Test-only hooks. */
   testHooks?: { afterExport?: (manifestPath: string) => void | Promise<void> };
 }

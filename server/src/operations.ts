@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import pg from 'pg';
@@ -10,6 +11,7 @@ import { platformAudit } from './registry.js';
 import { REGISTRY_COLUMNS, type RegistryEntry } from './tenancy.js';
 import { generateDbPassword } from './secrets.js';
 import { hashPassword } from './passwords.js';
+import { decryptFile, encryptFile } from './backup-crypto.js';
 
 const run = promisify(execFile);
 
@@ -42,7 +44,10 @@ export interface ExportManifest {
   created_at: string;
   schema_version: string | null;
   dump_file: string;
+  /** SHA-256 of the file as stored (the ciphertext when `encryption` is present). */
   dump_sha256: string;
+  /** Present when the dump is encrypted at rest (see backup-crypto.ts). Covered by the manifest signature. */
+  encryption?: { alg: 'aes-256-gcm-chunked'; version: 1 };
   table_counts: Record<string, number>;
   /** md5 over the sorted canonical JSON text of every row, per table, taken in the SAME snapshot as the dump. */
   table_digests: Record<string, string>;
@@ -141,6 +146,19 @@ export async function exportSchool(
     await snap.end().catch(() => undefined);
   }
   fs.chmodSync(dump, 0o600);
+  let stored = dump;
+  if (d.backupEncryptionKey) {
+    // Encrypt next to the plaintext, then remove the plaintext; on any failure no plaintext dump is left behind.
+    stored = `${dump}.enc`;
+    try {
+      encryptFile(dump, stored, d.backupEncryptionKey);
+    } catch (err) {
+      fs.rmSync(stored, { force: true });
+      throw err;
+    } finally {
+      fs.rmSync(dump, { force: true });
+    }
+  }
   const base: Omit<ExportManifest, 'signature'> = {
     format: 2,
     school_id: e.id,
@@ -148,13 +166,14 @@ export async function exportSchool(
     database: e.db_name,
     created_at: now.toISOString(),
     schema_version: e.schema_version,
-    dump_file: path.basename(dump),
-    dump_sha256: sha256(dump),
+    dump_file: path.basename(stored),
+    dump_sha256: sha256(stored),
+    ...(d.backupEncryptionKey ? { encryption: { alg: 'aes-256-gcm-chunked' as const, version: 1 as const } } : {}),
     table_counts: Object.fromEntries(Object.entries(stats).map(([t, s]) => [t, s.count])),
     table_digests: Object.fromEntries(Object.entries(stats).map(([t, s]) => [t, s.digest])),
   };
   const manifest: ExportManifest = d.backupSigningKey ? signManifest(base, d.backupSigningKey) : base;
-  const manifestPath = `${dump}.manifest.json`;
+  const manifestPath = `${stored}.manifest.json`;
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), { mode: 0o600 });
   await platformAudit(d.control, {
     actorId: null,
@@ -162,7 +181,7 @@ export async function exportSchool(
     action: 'school.exported',
     entityType: 'school',
     entityId: schoolId,
-    metadata: { dump_sha256: manifest.dump_sha256, signed: Boolean(manifest.signature) },
+    metadata: { dump_sha256: manifest.dump_sha256, signed: Boolean(manifest.signature), encrypted: Boolean(manifest.encryption) },
   });
   return { manifestPath, manifest };
 }
@@ -189,9 +208,37 @@ export async function restoreDump(d: ProvisionDeps, manifestPath: string, target
   if (!/^[a-z][a-z0-9_]{2,40}$/.test(targetDb)) throw new Error('invalid target database name');
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as ExportManifest;
   const signature = verifyManifest(manifest, d.backupSigningKey);
-  const dump = path.join(path.dirname(manifestPath), manifest.dump_file);
-  if (sha256(dump) !== manifest.dump_sha256) throw new Error('dump file does not match its manifest checksum (corrupted or tampered)');
+  const stored = path.join(path.dirname(manifestPath), manifest.dump_file);
+  if (sha256(stored) !== manifest.dump_sha256) throw new Error('dump file does not match its manifest checksum (corrupted or tampered)');
+  // An encrypted dump is decrypted into a private scratch directory only for the duration of the restore.
+  let scratch: string | null = null;
+  let dump = stored;
+  if (manifest.encryption) {
+    if (!d.backupEncryptionKey) throw new Error('this backup is encrypted but no backup encryption key is configured');
+    scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'petra-restore-'));
+    dump = path.join(scratch, 'dump');
+    try {
+      decryptFile(stored, dump, d.backupEncryptionKey);
+    } catch (err) {
+      fs.rmSync(scratch, { recursive: true, force: true });
+      throw err;
+    }
+  }
+  try {
+    return await restoreFromDump(d, manifest, dump, signature, targetDb, opts);
+  } finally {
+    if (scratch) fs.rmSync(scratch, { recursive: true, force: true });
+  }
+}
 
+async function restoreFromDump(
+  d: ProvisionDeps,
+  manifest: ExportManifest,
+  dump: string,
+  signature: RestoreResult['signature'],
+  targetDb: string,
+  opts: { keepOnFailure?: boolean },
+): Promise<RestoreResult> {
   let created = false;
   let placeholder: string | null = null;
   const cleanup = async (): Promise<boolean> => {
