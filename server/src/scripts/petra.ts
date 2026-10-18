@@ -10,6 +10,8 @@ import { createPool } from '../db.js';
 import { todayIn } from '../entitlements.js';
 import { assertOperatorUrls } from '../production-guards.js';
 import { runtimeDbTls } from '../tls.js';
+import { randomBytes } from 'node:crypto';
+import { parseBackupKey } from '../backup-crypto.js';
 import { exportSchool, finalizeOffboarding, resetSchoolAccountPassword, restoreDump, startOffboarding } from '../operations.js';
 import { hashPassword, PASSWORD_MIN_LENGTH } from '../passwords.js';
 import { DEFAULT_MAINTENANCE_DBS, checkDatabaseAcls, hardenDatabaseAccess, type AclSpec } from '../db-access.js';
@@ -37,6 +39,13 @@ function die(m: string): never {
   process.exit(1);
 }
 
+if (cmd === 'generate-backup-key') {
+  console.log(randomBytes(32).toString('base64'));
+  console.log(
+    'Store this value as PETRA_BACKUP_ENCRYPTION_KEY in a secret manager that is NOT on the backup host. Without it encrypted backups cannot be restored.',
+  );
+  process.exit(0);
+}
 if (cmd === 'generate-master-key') {
   console.log(generateMasterKey());
   console.log(
@@ -46,7 +55,7 @@ if (cmd === 'generate-master-key') {
 }
 if (!cmd || cmd === 'help')
   die(
-    'commands: register provision migrate health rotate-secret reencrypt-secrets sweep export restore offboard-start offboard-finalize admin-reset migrate-to-dedicated rollback-to-shared import-platform-admins platform-admin-create build-profile seed-demo generate-master-key generate-signing-key harden-db-access migration-inspect migration-recover',
+    'commands: register provision migrate health rotate-secret reencrypt-secrets sweep export restore offboard-start offboard-finalize admin-reset migrate-to-dedicated rollback-to-shared import-platform-admins platform-admin-create build-profile seed-demo generate-master-key generate-backup-key generate-signing-key harden-db-access migration-inspect migration-recover',
   );
 
 const config = loadConfig(); // throws a non-sensitive error for unsafe production configuration
@@ -57,7 +66,13 @@ const adminUrl = process.env.PROVISIONER_DATABASE_URL ?? die('PROVISIONER_DATABA
 const secrets = new SecretBox(loadMasterKeys(config));
 const signingKey = process.env.PETRA_BACKUP_SIGNING_KEY ? Buffer.from(process.env.PETRA_BACKUP_SIGNING_KEY, 'base64') : undefined;
 if (signingKey && signingKey.length !== 32) die('PETRA_BACKUP_SIGNING_KEY must be base64 of exactly 32 bytes');
-const deps: ProvisionDeps = { control, secrets, adminUrl, backupSigningKey: signingKey, schoolSsl: dbTls.school };
+let encryptionKey: Buffer | undefined;
+try {
+  encryptionKey = parseBackupKey(process.env.PETRA_BACKUP_ENCRYPTION_KEY);
+} catch (e) {
+  die((e as Error).message);
+}
+const deps: ProvisionDeps = { control, secrets, adminUrl, backupSigningKey: signingKey, backupEncryptionKey: encryptionKey, schoolSsl: dbTls.school };
 
 const dbNameOf = (url: string | undefined) => (url ? decodeURIComponent(new URL(url).pathname.slice(1)) : undefined);
 /** Which databases are protected from application roles. Maintenance databases can be skipped with --skip-maintenance. */
@@ -177,6 +192,10 @@ try {
       break;
     }
     case 'export': {
+      if (config.NODE_ENV === 'production' && !encryptionKey && !flag('allow-unencrypted'))
+        die(
+          'refusing to write an unencrypted backup in production: set PETRA_BACKUP_ENCRYPTION_KEY (npm run petra -- generate-backup-key) or pass --allow-unencrypted',
+        );
       const e = await school(positional[0]);
       const r = await exportSchool(deps, e.id, path.resolve(positional[1] ?? die('usage: export <slug> <output-dir>')));
       console.log(`Wrote ${r.manifestPath}`);
