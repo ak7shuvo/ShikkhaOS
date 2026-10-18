@@ -108,3 +108,7 @@ docs/              PHASE2_ARCHITECTURE, DATABASE_ISOLATION, SCHOOL_PROVISIONING,
 ## Documentation
 
 [Phase 2 architecture](docs/PHASE2_ARCHITECTURE.md) · [Database isolation](docs/DATABASE_ISOLATION.md) · [Provisioning](docs/SCHOOL_PROVISIONING.md) · [Subscriptions](docs/SUBSCRIPTIONS.md) · [Deployment](docs/DEPLOYMENT.md) · [Security](docs/SECURITY.md) · [Architecture (Phase 1)](docs/ARCHITECTURE.md) · [Database (school schema)](docs/DATABASE.md) · [Implementation plan & roadmap](docs/IMPLEMENTATION_PLAN.md)
+
+## Desktop app
+
+A Linux desktop shell (Electron around the unchanged web UI, school-branded via `petra build-profile`) lives in `desktop/`; architecture, security model, build/run instructions (including NixOS notes), tests and roadmap are in [docs/DESKTOP.md](docs/DESKTOP.md). It is a foundation: no Windows/Android build, signing, auto-update or offline mode yet.

@@ -10,5 +10,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["*.ts", "tests", "../server/src", "../server/test/safety.ts", "../server/test/global-setup.ts"]
+  "include": ["*.ts", "tests", "desktop-tests", "../server/src", "../server/test/safety.ts", "../server/test/global-setup.ts"]
 }

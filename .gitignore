@@ -10,3 +10,7 @@ builds
 e2e/.state
 e2e/test-results
 e2e/playwright-report
+desktop/dist
+desktop/build
+desktop/release
+desktop/.test-profile

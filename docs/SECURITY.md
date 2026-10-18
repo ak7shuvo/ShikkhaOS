@@ -25,7 +25,7 @@ See [DATABASE_ISOLATION.md](DATABASE_ISOLATION.md) for roles, secrets and the ne
 
 ## CSRF / browser hardening
 
-`SameSite=Strict` cookies, plus rejection of non-GET requests whose `Origin` is not in `ALLOWED_ORIGINS`. `@fastify/helmet` headers (CSP disabled for the JSON API; set one on the static host). Responses under `/api` carry `Cache-Control: no-store`.
+`SameSite=Strict` cookies, plus rejection of non-GET requests whose `Origin` is not in `ALLOWED_ORIGINS`. `@fastify/helmet` headers (CSP disabled for the JSON API). The static host must send the CSP/HSTS/framing headers in `deploy/web-security-headers.json`; CI verifies that the built app runs under them, not that your host sends them. Responses under `/api` carry `Cache-Control: no-store`.
 
 ## Authorization
 

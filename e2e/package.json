@@ -7,7 +7,10 @@
     "prepare-db": "tsx --env-file-if-exists=../.env prepare.ts",
     "test": "npm run prepare-db && playwright test",
     "test:negative": "npm run prepare-db && E2E_SIMULATE_BROKEN_LOGOUT=1 playwright test",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:desktop": "node ../node_modules/electron/install.js && npm run prepare-db && node ../desktop/scripts/test-profile.mjs ../desktop/.test-profile http://127.0.0.1:3000 && node ../desktop/scripts/build.mjs prepare --profile ../desktop/.test-profile --api http://127.0.0.1:3000 --allow-insecure-loopback && xvfb-run -a playwright test -c playwright.desktop.config.ts",
+    "test:desktop:packaged": "npm run prepare-db && node ../desktop/scripts/test-profile.mjs ../desktop/.test-profile http://127.0.0.1:3000 && node ../desktop/scripts/build.mjs package --dir --profile ../desktop/.test-profile --api http://127.0.0.1:3000 --allow-insecure-loopback && DESKTOP_EXECUTABLE=\"$(ls ../desktop/release/linux-unpacked/shikkhaos-e2e-*  | head -1)\" xvfb-run -a playwright test -c playwright.desktop.config.ts",
+    "test:desktop:negative": "node ../node_modules/electron/install.js && npm run prepare-db && node ../desktop/scripts/test-profile.mjs ../desktop/.test-profile http://127.0.0.1:3000 && node ../desktop/scripts/build.mjs prepare --profile ../desktop/.test-profile --api http://127.0.0.1:3000 --allow-insecure-loopback && E2E_SIMULATE_BROKEN_LOGOUT=1 xvfb-run -a playwright test -c playwright.desktop.config.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.56.1"

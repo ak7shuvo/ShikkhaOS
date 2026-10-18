@@ -1,0 +1,31 @@
+# Example nginx server block for the static web build (web/dist) next to the API. TLS certificate directives are omitted.
+# The header values are the source of truth in deploy/web-security-headers.json; e2e/tests/web-headers.spec.ts checks that
+# this file contains every one of them and that the built app runs under exactly that policy.
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name app.example.org;
+
+    root /srv/shikkhaos/web/dist;
+    index index.html;
+
+    # `always` so the headers are also present on 4xx/5xx responses.
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "no-referrer" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;
+    add_header Cross-Origin-Opener-Policy "same-origin" always;
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # nginx drops add_header from the server block inside a location that sets its own; the API sends its own helmet headers.
+    }
+
+    location / {
+        try_files $uri /index.html;
+    }
+}
