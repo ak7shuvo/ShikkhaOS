@@ -20,20 +20,42 @@ export async function platformAuthRoutes(app: FastifyInstance): Promise<void> {
   const full = { preHandler: platformAuthz(app) };
   const early = { preHandler: platformAuthz(app, { allowIncomplete: true }) };
 
-  const recordFailure = (adminId: string) =>
-    control.query(
+  // Two limits: LOGIN_MAX_FAILURES per (administrator, source address) so an attacker only locks their own address out, and a much higher
+  // PLATFORM_LOGIN_ACCOUNT_MAX_FAILURES across all addresses for distributed guessing. `petra platform-admin-unlock` clears both.
+  const addr = (ip: string | undefined) => (ip || 'unknown').slice(0, 64);
+  const recordFailure = async (adminId: string, ip: string | undefined) => {
+    await control.query(
+      `INSERT INTO platform_login_attempts (admin_id, ip, failures, locked_until) VALUES ($1,$2,1, CASE WHEN 1 >= $3 THEN now() + make_interval(mins => $4) END)
+       ON CONFLICT (admin_id, ip) DO UPDATE SET failures = platform_login_attempts.failures + 1, last_failure_at = now(),
+         locked_until = CASE WHEN platform_login_attempts.failures + 1 >= $3 THEN now() + make_interval(mins => $4) ELSE platform_login_attempts.locked_until END`,
+      [adminId, addr(ip), config.LOGIN_MAX_FAILURES, config.LOGIN_LOCK_MINUTES],
+    );
+    await control.query(
       `UPDATE platform_admins SET failed_login_count = failed_login_count + 1,
          locked_until = CASE WHEN failed_login_count + 1 >= $2 THEN now() + make_interval(mins => $3) ELSE locked_until END WHERE id = $1`,
-      [adminId, config.LOGIN_MAX_FAILURES, config.LOGIN_LOCK_MINUTES],
+      [adminId, config.PLATFORM_LOGIN_ACCOUNT_MAX_FAILURES, config.LOGIN_LOCK_MINUTES],
     );
+  };
+  const clearFailures = async (adminId: string, ip: string | undefined) => {
+    await control.query(`DELETE FROM platform_login_attempts WHERE admin_id = $1 AND ip = $2`, [adminId, addr(ip)]);
+    await control.query(`UPDATE platform_admins SET failed_login_count = 0, locked_until = NULL WHERE id = $1`, [adminId]);
+  };
+  /** True when this address, or the whole account, is locked. */
+  const isLocked = async (adminId: string, ip: string | undefined, accountLockedUntil: Date | string | null): Promise<boolean> => {
+    if (accountLockedUntil && new Date(accountLockedUntil) > new Date()) return true;
+    return (
+      (await control.query(`SELECT 1 FROM platform_login_attempts WHERE admin_id = $1 AND ip = $2 AND locked_until > now()`, [adminId, addr(ip)])).rowCount ===
+      1
+    );
+  };
 
   /** Verifies the current password of a signed-in administrator (re-authentication); failures count towards the lockout. */
-  async function reauthenticate(adminId: string, password: string): Promise<void> {
+  async function reauthenticate(adminId: string, password: string, ip: string | undefined): Promise<void> {
     const a = (await control.query(`SELECT password_hash, locked_until FROM platform_admins WHERE id = $1`, [adminId])).rows[0];
     if (!a) throw new AppError(401, 'UNAUTHENTICATED', 'Authentication required');
-    if (a.locked_until && new Date(a.locked_until) > new Date()) throw new AppError(403, 'ACCOUNT_LOCKED', 'Too many failed attempts; try again later');
+    if (await isLocked(adminId, ip, a.locked_until)) throw new AppError(403, 'ACCOUNT_LOCKED', 'Too many failed attempts; try again later');
     if (!(await verifyPassword(a.password_hash, password))) {
-      await recordFailure(adminId);
+      await recordFailure(adminId, ip);
       throw new AppError(403, 'WRONG_PASSWORD', 'Current password is incorrect');
     }
   }
@@ -76,10 +98,10 @@ export async function platformAuthRoutes(app: FastifyInstance): Promise<void> {
       await burnPasswordCheck(b.password);
       throw fail();
     }
-    const locked = a.locked_until && new Date(a.locked_until) > new Date();
+    const locked = await isLocked(a.id, req.ip, a.locked_until);
     const ok = await verifyPassword(a.password_hash, b.password);
     if (locked || a.status !== 'active' || !ok) {
-      if (!ok && !locked && a.status === 'active') await recordFailure(a.id);
+      if (!ok && !locked && a.status === 'active') await recordFailure(a.id, req.ip);
       throw fail();
     }
 
@@ -99,14 +121,14 @@ export async function platformAuthRoutes(app: FastifyInstance): Promise<void> {
         usedRecovery = good;
       }
       if (!good) {
-        await recordFailure(a.id);
+        await recordFailure(a.id, req.ip);
         throw new AppError(401, 'INVALID_MFA_CODE', 'Invalid verification code');
       }
       mfaVerified = true;
     }
 
     const token = newSessionToken();
-    await control.query(`UPDATE platform_admins SET failed_login_count = 0, locked_until = NULL WHERE id = $1`, [a.id]);
+    await clearFailures(a.id, req.ip);
     await control.query(
       `INSERT INTO platform_sessions (token_hash, admin_id, expires_at, mfa_verified) VALUES ($1,$2, now() + make_interval(hours => $3), $4)`,
       [hashToken(token), a.id, config.SESSION_TTL_HOURS, mfaVerified],
@@ -143,6 +165,8 @@ export async function platformAuthRoutes(app: FastifyInstance): Promise<void> {
     return {
       admin: { id: p.adminId, email: p.email, full_name: p.fullName },
       mfa: { enabled: p.mfaEnabled, required: config.PLATFORM_MFA_REQUIRED, state: p.mfaState },
+      role: p.role,
+      step_up: { required: config.PLATFORM_STEPUP_REQUIRED, minutes: config.PLATFORM_STEPUP_MINUTES },
     };
   });
 
@@ -152,7 +176,7 @@ export async function platformAuthRoutes(app: FastifyInstance): Promise<void> {
     const p = platformOf(req);
     if (p.mfaEnabled) throw new AppError(409, 'MFA_ALREADY_ENABLED', 'Two-factor authentication is already enabled');
     const b = parse(z.object({ current_password: z.string().min(1).max(256) }), req.body);
-    await reauthenticate(p.adminId, b.current_password);
+    await reauthenticate(p.adminId, b.current_password, req.ip);
     const secret = generateTotpSecret();
     await control.query(`UPDATE platform_admins SET mfa_pending_secret_enc = $2 WHERE id = $1`, [p.adminId, secrets.encrypt(secret, aad(p.adminId))]);
     return { secret, otpauth_uri: otpauthUri(MFA_ISSUER, p.email, secret) };
@@ -165,10 +189,10 @@ export async function platformAuthRoutes(app: FastifyInstance): Promise<void> {
     const b = parse(z.object({ code: z.string().regex(/^\d{6}$/) }), req.body);
     const a = (await control.query(`SELECT mfa_pending_secret_enc, locked_until FROM platform_admins WHERE id = $1`, [p.adminId])).rows[0];
     if (!a?.mfa_pending_secret_enc) throw new AppError(409, 'NO_PENDING_ENROLMENT', 'Start enrolment first');
-    if (a.locked_until && new Date(a.locked_until) > new Date()) throw new AppError(403, 'ACCOUNT_LOCKED', 'Too many failed attempts; try again later');
+    if (await isLocked(p.adminId, req.ip, a.locked_until)) throw new AppError(403, 'ACCOUNT_LOCKED', 'Too many failed attempts; try again later');
     const step = verifyTotp(secrets.decrypt(a.mfa_pending_secret_enc, aad(p.adminId)), b.code, now().getTime(), null);
     if (step === null) {
-      await recordFailure(p.adminId);
+      await recordFailure(p.adminId, req.ip);
       throw new AppError(401, 'INVALID_MFA_CODE', 'Invalid verification code');
     }
     const codes = generateRecoveryCodes();
@@ -200,10 +224,10 @@ export async function platformAuthRoutes(app: FastifyInstance): Promise<void> {
     const p = platformOf(req);
     if (!p.mfaEnabled) throw new AppError(409, 'MFA_NOT_ENABLED', 'Two-factor authentication is not enabled');
     const b = parse(z.object({ current_password: z.string().min(1).max(256), mfa_code: z.string().regex(/^\d{6}$/) }), req.body);
-    await reauthenticate(p.adminId, b.current_password);
+    await reauthenticate(p.adminId, b.current_password, req.ip);
     const a = (await control.query(`SELECT mfa_secret_enc, mfa_last_step::text AS mfa_last_step FROM platform_admins WHERE id = $1`, [p.adminId])).rows[0];
     if (!(await consumeTotp(p.adminId, a.mfa_secret_enc, a.mfa_last_step, b.mfa_code))) {
-      await recordFailure(p.adminId);
+      await recordFailure(p.adminId, req.ip);
       throw new AppError(401, 'INVALID_MFA_CODE', 'Invalid verification code');
     }
     const codes = generateRecoveryCodes();
@@ -223,12 +247,42 @@ export async function platformAuthRoutes(app: FastifyInstance): Promise<void> {
     return { recovery_codes: codes };
   });
 
+  // Step-up: destructive actions need the second factor re-proved within PLATFORM_STEPUP_MINUTES. A TOTP step is single use, so the
+  // code must come from a later 30-second window than the one used to sign in. Without MFA (development only) the password is used.
+  app.post('/platform/auth/step-up', { ...full, ...limited }, async (req) => {
+    const p = platformOf(req);
+    const b = parse(
+      z.object({
+        mfa_code: z
+          .string()
+          .regex(/^\d{6}$/)
+          .optional(),
+        current_password: z.string().min(1).max(256).optional(),
+      }),
+      req.body,
+    );
+    if (p.mfaEnabled) {
+      if (!b.mfa_code) throw new AppError(400, 'VALIDATION_ERROR', 'mfa_code is required');
+      const a = (await control.query(`SELECT mfa_secret_enc, mfa_last_step::text AS mfa_last_step FROM platform_admins WHERE id = $1`, [p.adminId])).rows[0];
+      if (!(await consumeTotp(p.adminId, a.mfa_secret_enc, a.mfa_last_step, b.mfa_code))) {
+        await recordFailure(p.adminId, req.ip);
+        throw new AppError(401, 'INVALID_MFA_CODE', 'Invalid verification code');
+      }
+    } else {
+      if (!b.current_password) throw new AppError(400, 'VALIDATION_ERROR', 'current_password is required');
+      await reauthenticate(p.adminId, b.current_password, req.ip);
+    }
+    await control.query(`UPDATE platform_sessions SET step_up_at = $2 WHERE id = $1`, [p.sessionId, now()]);
+    await platformAudit(control, { actorId: p.adminId, action: 'platform.step_up', entityType: 'platform_admin', entityId: p.adminId });
+    return { ok: true, valid_for_minutes: config.PLATFORM_STEPUP_MINUTES };
+  });
+
   // ------------------------------------------------------------------ password change
   app.post('/platform/auth/change-password', { ...full, ...limited }, async (req) => {
     const p = platformOf(req);
     const b = parse(z.object({ current_password: z.string().min(1).max(256), new_password: z.string().min(PLATFORM_PASSWORD_MIN_LENGTH).max(256) }), req.body);
     if (b.new_password === b.current_password) throw new AppError(400, 'VALIDATION_ERROR', 'The new password must differ from the current one');
-    await reauthenticate(p.adminId, b.current_password);
+    await reauthenticate(p.adminId, b.current_password, req.ip);
     const hash = await hashPassword(b.new_password);
     await control.query(`UPDATE platform_admins SET password_hash = $2, password_changed_at = now() WHERE id = $1`, [p.adminId, hash]);
     await control.query(`DELETE FROM platform_sessions WHERE admin_id = $1 AND id <> $2`, [p.adminId, p.sessionId]); // every other session ends

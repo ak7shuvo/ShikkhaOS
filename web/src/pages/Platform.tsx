@@ -315,6 +315,55 @@ function Security({ mfaEnabled }: { mfaEnabled: boolean }) {
   );
 }
 
+/**
+ * Destructive platform actions need a recent step-up. `guard(fn)` runs fn; when the server answers STEP_UP_REQUIRED the action is parked,
+ * `prompt` asks for a fresh verification code (or the password when MFA is not enabled in development), then the action is retried once.
+ */
+function useStepUp() {
+  const { t } = useI18n();
+  const [pending, setPending] = useState<(() => Promise<void>) | null>(null);
+  const [code, setCode] = useState('');
+  const confirm = useAction();
+  const guard = (fn: () => Promise<void>) => async () => {
+    try {
+      await fn();
+    } catch (e) {
+      if (e instanceof ApiError && e.code === 'STEP_UP_REQUIRED') {
+        setPending(() => fn);
+        return;
+      }
+      throw e;
+    }
+  };
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    void confirm.run(async () => {
+      const v = code.trim();
+      await api.post('/platform/auth/step-up', /^\d{6}$/.test(v) ? { mfa_code: v } : { current_password: code });
+      const retry = pending;
+      setPending(null);
+      setCode('');
+      if (retry) await retry();
+    });
+  };
+  const prompt = pending ? (
+    <Card title={t('platform.stepUp.title')}>
+      <form className="stack" onSubmit={submit}>
+        <p>{t('platform.stepUp.intro')}</p>
+        <TextField label={t('platform.stepUp.code')} autoComplete="one-time-code" required autoFocus value={code} onChange={(e) => setCode(e.target.value)} />
+        <ErrorBanner error={confirm.error} />
+        <Button type="submit" busy={confirm.busy}>
+          {t('platform.stepUp.confirm')}
+        </Button>
+        <Button variant="secondary" small onClick={() => setPending(null)}>
+          {t('common.cancel')}
+        </Button>
+      </form>
+    </Card>
+  ) : null;
+  return { guard, prompt };
+}
+
 function Schools() {
   const { t } = useI18n();
   const q = useQuery(() => api.get<{ items: SchoolRow[] }>('/platform/schools'), []);
@@ -322,6 +371,7 @@ function Schools() {
   const [f, setF] = useState({ slug: '', name: '', admin_email: '', admin_name: '', plan: 'monthly' });
   const a = useAction();
   const b = useAction();
+  const su = useStepUp();
   const [hint, setHint] = useState('');
   const register = (e: FormEvent) => {
     e.preventDefault();
@@ -333,13 +383,16 @@ function Schools() {
     });
   };
   const toggle = (s: SchoolRow) =>
-    void b.run(async () => {
-      await api.patch(`/platform/schools/${s.id}/status`, { status: s.status === 'active' ? 'suspended' : 'active' });
-      q.reload();
-    });
+    void b.run(
+      su.guard(async () => {
+        await api.patch(`/platform/schools/${s.id}/status`, { status: s.status === 'active' ? 'suspended' : 'active' });
+        q.reload();
+      }),
+    );
   return (
     <div>
       <h1>{t('nav.platformSchools')}</h1>
+      {su.prompt}
       <Card>
         <Async q={q}>
           {(d) => (
@@ -432,6 +485,7 @@ function Subscription({ school, onChanged }: { school: SchoolRow; onChanged: () 
   });
   const a = useAction();
   const b = useAction();
+  const su = useStepUp();
   const [reason, setReason] = useState('');
   const pay = (e: FormEvent) => {
     e.preventDefault();
@@ -442,14 +496,17 @@ function Subscription({ school, onChanged }: { school: SchoolRow; onChanged: () 
     });
   };
   const act = (path: string) =>
-    void b.run(async () => {
-      await api.post(`/platform/schools/${school.id}/subscription/${path}`, path === 'cancel' ? {} : { reason });
-      setReason('');
-      q.reload();
-      onChanged();
-    });
+    void b.run(
+      su.guard(async () => {
+        await api.post(`/platform/schools/${school.id}/subscription/${path}`, path === 'cancel' ? {} : { reason });
+        setReason('');
+        q.reload();
+        onChanged();
+      }),
+    );
   return (
     <Card title={`${t('platform.license')} — ${school.name}`}>
+      {su.prompt}
       <Async q={q}>
         {(d) => (
           <>

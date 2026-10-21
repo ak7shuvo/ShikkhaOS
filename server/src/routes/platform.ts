@@ -15,7 +15,10 @@ const SAFE_COLUMNS = `s.id, s.slug, s.name, s.status, s.db_mode, s.db_name, s.pr
 /** Platform (Petra staff) API. Uses ONLY the control plane: no school database credential is ever used here. */
 export async function platformRoutes(app: FastifyInstance): Promise<void> {
   const { control, config, router, entitlements } = app.deps;
-  const guard = { preHandler: platformAuthz(app) };
+  // Read-only for every role; writes need operator; destructive or irreversible actions need owner AND a recent step-up.
+  const guard = { preHandler: platformAuthz(app, { minRole: 'viewer' }) };
+  const write = { preHandler: platformAuthz(app, { minRole: 'operator' }) };
+  const destructive = { preHandler: platformAuthz(app, { minRole: 'owner', stepUp: true }) };
 
   // ------------------------------------------------------------------ schools
   app.get('/platform/schools', guard, async () => {
@@ -61,7 +64,7 @@ export async function platformRoutes(app: FastifyInstance): Promise<void> {
 
   // Registration only records the school. The database is created by the operator-run provisioning workflow
   // (`npm run school:provision`), which holds the privileged credential — the API process never does.
-  app.post('/platform/schools', guard, async (req, reply) => {
+  app.post('/platform/schools', write, async (req, reply) => {
     const b = parse(
       z.object({
         slug: z.string().regex(SLUG_RE),
@@ -100,7 +103,7 @@ export async function platformRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // Only reversible operational states are exposed here; offboarding/deletion is an operator procedure.
-  app.patch('/platform/schools/:id/status', guard, async (req) => {
+  app.patch('/platform/schools/:id/status', destructive, async (req) => {
     const { id: sid } = parse(z.object({ id }), req.params);
     const { status } = parse(z.object({ status: z.enum(['active', 'suspended']) }), req.body);
     const cur = (await control.query(`SELECT ${REGISTRY_COLUMNS} FROM schools WHERE id = $1`, [sid])).rows[0];
@@ -121,7 +124,7 @@ export async function platformRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // ------------------------------------------------------------------ branding
-  app.put('/platform/schools/:id/branding', guard, async (req) => {
+  app.put('/platform/schools/:id/branding', write, async (req) => {
     const { id: sid } = parse(z.object({ id }), req.params);
     const b = validateBranding(req.body);
     const r = await control.query(
@@ -158,7 +161,7 @@ export async function platformRoutes(app: FastifyInstance): Promise<void> {
     return { subscription: subView(await subOf(sid)), payments: pay, events: ev };
   });
 
-  app.post('/platform/schools/:id/subscription/payments', guard, async (req, reply) => {
+  app.post('/platform/schools/:id/subscription/payments', write, async (req, reply) => {
     const { id: sid } = parse(z.object({ id }), req.params);
     const b = parse(
       z.object({
@@ -213,12 +216,12 @@ export async function platformRoutes(app: FastifyInstance): Promise<void> {
     return subView(await subOf(sid));
   };
   const reasonBody = z.object({ reason: z.string().trim().min(3).max(500) });
-  app.post('/platform/schools/:id/subscription/suspend', guard, async (req) => {
+  app.post('/platform/schools/:id/subscription/suspend', destructive, async (req) => {
     const { id: sid } = parse(z.object({ id }), req.params);
     return setStatus(sid, platformOf(req).adminId, 'suspended', 'suspended', parse(reasonBody, req.body).reason);
   });
   // Reinstating recomputes status from dates (an expired period stays read-only/blocked until paid).
-  app.post('/platform/schools/:id/subscription/reinstate', guard, async (req) => {
+  app.post('/platform/schools/:id/subscription/reinstate', write, async (req) => {
     const { id: sid } = parse(z.object({ id }), req.params);
     const reason = parse(reasonBody, req.body).reason;
     const cur = await subOf(sid);
@@ -226,11 +229,11 @@ export async function platformRoutes(app: FastifyInstance): Promise<void> {
     const eff = entitlementOf({ ...cur, status: 'active' }, entitlements.today());
     return setStatus(sid, platformOf(req).adminId, 'active', 'reinstated', `${reason} (access now: ${eff.level})`);
   });
-  app.post('/platform/schools/:id/subscription/cancel', guard, async (req) => {
+  app.post('/platform/schools/:id/subscription/cancel', destructive, async (req) => {
     const { id: sid } = parse(z.object({ id }), req.params);
     return setStatus(sid, platformOf(req).adminId, 'cancelled', 'cancelled', 'no renewal; access continues to period end');
   });
-  app.patch('/platform/schools/:id/subscription/terms', guard, async (req) => {
+  app.patch('/platform/schools/:id/subscription/terms', destructive, async (req) => {
     const { id: sid } = parse(z.object({ id }), req.params);
     const b = parse(
       z
@@ -264,7 +267,7 @@ export async function platformRoutes(app: FastifyInstance): Promise<void> {
   app.get('/platform/releases', guard, async () => ({
     items: (await control.query(`SELECT version, channel, min_supported_version, notes, created_at FROM app_releases ORDER BY created_at DESC LIMIT 50`)).rows,
   }));
-  app.post('/platform/releases', guard, async (req, reply) => {
+  app.post('/platform/releases', write, async (req, reply) => {
     const b = parse(
       z.object({
         version: z.string().regex(/^\d+\.\d+\.\d+$/),
@@ -284,7 +287,7 @@ export async function platformRoutes(app: FastifyInstance): Promise<void> {
     await platformAudit(control, { actorId: platformOf(req).adminId, action: 'release.publish', entityType: 'release', entityId: b.version });
     return reply.status(201).send(b);
   });
-  app.put('/platform/schools/:id/build-profiles/:platform', guard, async (req) => {
+  app.put('/platform/schools/:id/build-profiles/:platform', write, async (req) => {
     const p = parse(z.object({ id, platform: z.enum(['android', 'windows', 'linux']) }), req.params);
     const b = parse(
       z.object({

@@ -46,7 +46,7 @@ if (cmd === 'generate-master-key') {
 }
 if (!cmd || cmd === 'help')
   die(
-    'commands: register provision migrate health rotate-secret reencrypt-secrets sweep export restore offboard-start offboard-finalize admin-reset migrate-to-dedicated rollback-to-shared import-platform-admins platform-admin-create platform-admin-mfa-reset build-profile seed-demo generate-master-key generate-signing-key harden-db-access migration-inspect migration-recover',
+    'commands: register provision migrate health rotate-secret reencrypt-secrets sweep export restore offboard-start offboard-finalize admin-reset migrate-to-dedicated rollback-to-shared import-platform-admins platform-admin-create platform-admin-mfa-reset platform-admin-unlock build-profile seed-demo generate-master-key generate-signing-key harden-db-access migration-inspect migration-recover',
   );
 
 const config = loadConfig(); // throws a non-sensitive error for unsafe production configuration
@@ -252,11 +252,24 @@ try {
       const pw = process.env.PLATFORM_ADMIN_PASSWORD;
       if (!email || !pw || pw.length < PLATFORM_PASSWORD_MIN_LENGTH)
         die(`PLATFORM_ADMIN_EMAIL and PLATFORM_ADMIN_PASSWORD (min ${PLATFORM_PASSWORD_MIN_LENGTH} chars) are required`);
-      await control.query(`INSERT INTO platform_admins (email, password_hash, full_name) VALUES ($1,$2,'Platform Administrator')`, [
+      const role = process.env.PLATFORM_ADMIN_ROLE ?? 'owner';
+      if (!['owner', 'operator', 'viewer'].includes(role)) die('PLATFORM_ADMIN_ROLE must be owner, operator or viewer');
+      await control.query(`INSERT INTO platform_admins (email, password_hash, full_name, role) VALUES ($1,$2,'Platform Administrator',$3)`, [
         email,
         await hashPassword(pw!),
+        role,
       ]);
-      console.log(`Platform admin ${email} created.`);
+      console.log(`Platform admin ${email} created with role ${role}.`);
+      break;
+    }
+    case 'platform-admin-unlock': {
+      // Clears the per-address and account-wide login locks of one platform administrator (e.g. after a targeted lock-out).
+      const email = positional[0] ?? die('usage: platform-admin-unlock <email>');
+      const a = (await control.query(`UPDATE platform_admins SET failed_login_count = 0, locked_until = NULL WHERE email = $1 RETURNING id`, [email])).rows[0];
+      if (!a) die('no such platform administrator');
+      await control.query(`DELETE FROM platform_login_attempts WHERE admin_id = $1`, [a.id]);
+      await platformAudit(control, { actorId: null, action: 'platform.unlocked', entityType: 'platform_admin', entityId: a.id, metadata: { by: 'operator' } });
+      console.log(`${email}: login locks cleared.`);
       break;
     }
     case 'platform-admin-mfa-reset': {

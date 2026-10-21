@@ -203,6 +203,7 @@ describe('MFA required: sign-in', () => {
     expect(locked.status).toBe(401);
     expect(locked.body.error.code).toBe('INVALID_CREDENTIALS');
     await h.control.query(`UPDATE platform_admins SET locked_until = NULL, failed_login_count = 0 WHERE id = $1`, [e.id]);
+    await h.control.query(`DELETE FROM platform_login_attempts WHERE admin_id = $1`, [e.id]); // what `petra platform-admin-unlock` does
     expect((await login(h, { email: e.email, password: PASSWORD, mfa_code: code(h, e.secret) })).status).toBe(200);
   });
 });

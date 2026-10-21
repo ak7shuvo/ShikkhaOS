@@ -205,6 +205,13 @@ export const en = {
   'platform.mfa.recoveryWarn': 'Each code works once and is shown only now. Store them offline, separately from your password.',
   'platform.mfa.saved': 'I have saved the codes',
   'platform.security': 'Security',
+  'platform.stepUp.title': 'Confirm this action',
+  'platform.stepUp.intro':
+    'This action is irreversible or affects a whole school. Enter a fresh verification code from your authenticator (or your password if two-factor is not enabled).',
+  'platform.stepUp.code': 'Verification code',
+  'platform.stepUp.confirm': 'Confirm and continue',
+  'error.STEP_UP_REQUIRED': 'Confirm with a fresh verification code to continue.',
+  'error.INSUFFICIENT_ROLE': 'Your platform role does not allow this action.',
   'platform.changePassword': 'Change password',
   'platform.currentPassword': 'Current password',
   'platform.newPassword': 'New password (at least 12 characters)',

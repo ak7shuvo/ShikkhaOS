@@ -39,6 +39,9 @@ export interface AuthContext {
  */
 export type PlatformMfaState = 'ok' | 'enrolment_required' | 'mfa_required';
 
+export type PlatformRole = 'owner' | 'operator' | 'viewer';
+const ROLE_RANK: Record<PlatformRole, number> = { viewer: 1, operator: 2, owner: 3 };
+
 export interface PlatformAuth {
   adminId: string;
   email: string;
@@ -46,6 +49,8 @@ export interface PlatformAuth {
   sessionId: string;
   tokenHash: string;
   mfaEnabled: boolean;
+  role: PlatformRole;
+  stepUpAt: Date | null;
   mfaState: PlatformMfaState;
 }
 
@@ -187,7 +192,7 @@ export async function authenticatePlatform(app: FastifyInstance, req: FastifyReq
   const tokenHash = hashToken(token);
   const { control, config } = app.deps;
   const { rows } = await control.query(
-    `SELECT s.id AS session_id, s.expires_at, s.last_seen_at, s.mfa_verified, a.id AS admin_id, a.email::text AS email, a.full_name, a.status,
+    `SELECT s.id AS session_id, s.expires_at, s.last_seen_at, s.mfa_verified, s.step_up_at, a.role, a.id AS admin_id, a.email::text AS email, a.full_name, a.status,
             (a.mfa_enabled_at IS NOT NULL) AS mfa_enabled
        FROM platform_sessions s JOIN platform_admins a ON a.id = s.admin_id WHERE s.token_hash = $1`,
     [tokenHash],
@@ -197,18 +202,37 @@ export async function authenticatePlatform(app: FastifyInstance, req: FastifyReq
   if (Date.now() - new Date(s.last_seen_at).getTime() > config.SESSION_IDLE_MINUTES * 60_000) throw unauthorized('Session expired due to inactivity');
   await control.query(`UPDATE platform_sessions SET last_seen_at = now() WHERE id = $1 AND last_seen_at < now() - interval '1 minute'`, [s.session_id]);
   const mfaState: PlatformMfaState = s.mfa_enabled ? (s.mfa_verified ? 'ok' : 'mfa_required') : config.PLATFORM_MFA_REQUIRED ? 'enrolment_required' : 'ok';
-  return { adminId: s.admin_id, email: s.email, fullName: s.full_name, sessionId: s.session_id, tokenHash, mfaEnabled: s.mfa_enabled, mfaState };
+  return {
+    adminId: s.admin_id,
+    email: s.email,
+    fullName: s.full_name,
+    sessionId: s.session_id,
+    tokenHash,
+    mfaEnabled: s.mfa_enabled,
+    mfaState,
+    role: s.role,
+    stepUpAt: s.step_up_at ? new Date(s.step_up_at) : null,
+  };
 }
 
 /**
  * Platform routes need a fully authenticated session. `allowIncomplete` is only for the handful of routes an administrator must be able
  * to reach before MFA is complete (identity, logout, enrolment); every other route answers 403 until the second factor is in place.
  */
-export function platformAuthz(app: FastifyInstance, opts: { allowIncomplete?: boolean } = {}) {
+export function platformAuthz(app: FastifyInstance, opts: { allowIncomplete?: boolean; minRole?: PlatformRole; stepUp?: boolean } = {}) {
   return async (req: FastifyRequest): Promise<void> => {
     const a = await authenticatePlatform(app, req);
     req.platformAuth = a;
-    if (opts.allowIncomplete || a.mfaState === 'ok') return;
+    if (opts.allowIncomplete) return;
+    if (a.mfaState === 'ok') {
+      if (opts.minRole && ROLE_RANK[a.role] < ROLE_RANK[opts.minRole])
+        throw new AppError(403, 'INSUFFICIENT_ROLE', `This action requires the "${opts.minRole}" role`);
+      if (opts.stepUp && app.deps.config.PLATFORM_STEPUP_REQUIRED) {
+        const fresh = a.stepUpAt && app.deps.now().getTime() - a.stepUpAt.getTime() <= app.deps.config.PLATFORM_STEPUP_MINUTES * 60_000;
+        if (!fresh) throw new AppError(403, 'STEP_UP_REQUIRED', 'Confirm with a fresh verification code to continue');
+      }
+      return;
+    }
     throw new AppError(
       403,
       a.mfaState === 'enrolment_required' ? 'MFA_ENROLMENT_REQUIRED' : 'MFA_REQUIRED',
