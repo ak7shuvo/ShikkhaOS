@@ -22,6 +22,12 @@ test('school-slug login → lapsed-subscription banner → logout → old sessio
   await page.getByLabel('Password').fill(school.password);
   await page.getByRole('button', { name: 'Sign in' }).click();
 
+  // The provisioned first admin still has the generated password: the app must insist on replacing it before anything else.
+  await expect(page.getByText(/password was set by an administrator/i), 'forced first-login password change must be shown').toBeVisible();
+  await page.getByLabel('Current password').fill(school.password);
+  await page.getByLabel(/New password/).fill(`${school.password}-changed-by-e2e`);
+  await page.getByRole('button', { name: 'Save' }).click();
+
   // Logged in, and the grace-period warning is shown (the subscription ended 3 days ago).
   const banner = page.getByRole('status').filter({ hasText: /subscription has ended/i });
   await expect(banner, 'grace-period renewal banner must be visible').toBeVisible();

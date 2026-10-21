@@ -407,10 +407,10 @@ export async function resetSchoolAccountPassword(d: ProvisionDeps, schoolId: str
   const c = new pg.Client({ connectionString: urlForDb(d.adminUrl, e.db_name) });
   await c.connect();
   try {
-    const u = await c.query(`UPDATE users SET password_hash = $2, failed_login_count = 0, locked_until = NULL WHERE email = $1 RETURNING id`, [
-      email,
-      await hashPassword(password),
-    ]);
+    const u = await c.query(
+      `UPDATE users SET password_hash = $2, failed_login_count = 0, locked_until = NULL, must_change_password = true WHERE email = $1 RETURNING id`,
+      [email, await hashPassword(password)],
+    );
     if (!u.rowCount) throw new Error('no such account in this school');
     await c.query(`DELETE FROM sessions WHERE user_id = $1`, [u.rows[0].id]);
   } finally {

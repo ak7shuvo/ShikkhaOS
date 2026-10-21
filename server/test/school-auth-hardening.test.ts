@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { Client, harness, loginAs, PASSWORD, seed, type Harness } from './helpers.js';
+import { acceptInitialPassword, Client, harness, loginAs, PASSWORD, seed, type Harness } from './helpers.js';
 import type { SeededSchool } from '../src/seed-data.js';
 
 let h: Harness;
@@ -59,6 +59,7 @@ describe('last administrator and self guard (L-2)', () => {
     expect(created.status).toBe(201);
     const second = new Client(h.app);
     expect((await second.login(email, 'long-enough-password')).status).toBe(200);
+    await acceptInitialPassword(second, 'long-enough-password');
     const firstId = await membershipId(S.users.admin.id);
     const secondId = created.body.id as string;
     // second admin suspends the first; now second is the last admin
@@ -73,6 +74,7 @@ describe('last administrator and self guard (L-2)', () => {
     const e2 = `race.two@${DOMAIN}`;
     const root = new Client(h.app);
     expect((await root.login(`second.admin@${DOMAIN}`, 'long-enough-password')).status).toBe(200);
+    await acceptInitialPassword(root, 'long-enough-password');
     const m1 = (await root.post('/school/members', { email: e1, full_name: 'Race One', initial_password: 'long-enough-password', role: 'school_admin' })).body
       .id as string;
     const m2 = (await root.post('/school/members', { email: e2, full_name: 'Race Two', initial_password: 'long-enough-password', role: 'school_admin' })).body
@@ -82,7 +84,9 @@ describe('last administrator and self guard (L-2)', () => {
     const c1 = new Client(h.app);
     const c2 = new Client(h.app);
     await c1.login(e1, 'long-enough-password');
+    await acceptInitialPassword(c1, 'long-enough-password');
     await c2.login(e2, 'long-enough-password');
+    await acceptInitialPassword(c2, 'long-enough-password');
     const res = await Promise.all([
       c1.req('PATCH', `/school/members/${m2}`, { status: 'suspended' }),
       c2.req('PATCH', `/school/members/${m1}`, { status: 'suspended' }),

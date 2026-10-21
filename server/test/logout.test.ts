@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { addDays } from '../src/entitlements.js';
 import { provisionSchool } from '../src/provisioning.js';
 import { controlFixture, registerNew, type ControlFixture } from './fixtures.js';
-import { Client, harness, loginAs, seed, setSubscription, type Harness } from './helpers.js';
+import { acceptInitialPassword, Client, harness, loginAs, seed, setSubscription, type Harness } from './helpers.js';
 
 let h: Harness;
 let f: ControlFixture;
@@ -122,6 +122,7 @@ describe('dedicated database schools', () => {
     const p = await provisionSchool(f.deps, id);
     const admin = new Client(h.app);
     expect((await admin.login(`admin@${slug}.example.test`, p.adminInitialPassword!, slug)).status).toBe(200);
+    await acceptInitialPassword(admin, p.adminInitialPassword!);
     const cookie = admin.cookie;
     await setStatus(id, 'maintenance');
     const r = await h.app.inject({ method: 'POST', url: '/api/auth/logout', headers: { origin: 'http://localhost:5173', cookie }, payload: {} });

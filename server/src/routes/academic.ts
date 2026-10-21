@@ -174,7 +174,12 @@ export async function academicRoutes(app: FastifyInstance): Promise<void> {
     const userId = b.account ? crypto.randomUUID() : null;
     const row = await schoolTx(app, req, async (tx, a) => {
       if (b.account && userId && pwHash) {
-        await tx.query(`INSERT INTO users (id, email, password_hash, full_name) VALUES ($1,$2,$3,$4)`, [userId, b.account.email, pwHash, b.full_name]);
+        await tx.query(`INSERT INTO users (id, email, password_hash, full_name, must_change_password) VALUES ($1,$2,$3,$4,true)`, [
+          userId,
+          b.account.email,
+          pwHash,
+          b.full_name,
+        ]);
         await tx.query(`INSERT INTO school_memberships (school_id, user_id, role) VALUES ($1,$2,'guardian')`, [a.schoolId, userId]);
       }
       const r = await tx.query(

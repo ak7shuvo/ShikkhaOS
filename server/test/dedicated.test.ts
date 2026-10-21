@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { dbNameFor, provisionSchool, roleNameFor, urlForDb } from '../src/provisioning.js';
 import { addDays } from '../src/entitlements.js';
 import { controlFixture, registerNew, type ControlFixture } from './fixtures.js';
-import { Client, harness, type Harness } from './helpers.js';
+import { acceptInitialPassword, Client, harness, type Harness } from './helpers.js';
 
 // End-to-end through the HTTP API with every school on its OWN PostgreSQL database and role.
 let h: Harness;
@@ -24,6 +24,7 @@ async function newSchool(prefix: string): Promise<Dedicated> {
   const admin = new Client(h.app);
   const login = await admin.login(adminEmail, r.adminInitialPassword!, slug);
   if (login.status !== 200) throw new Error(`login failed: ${login.status} ${JSON.stringify(login.body)}`);
+  await acceptInitialPassword(admin, r.adminInitialPassword!);
   return { id, slug, adminEmail, adminPw: r.adminInitialPassword!, admin };
 }
 
@@ -163,10 +164,13 @@ describe('full result workflow on dedicated databases', () => {
 
     const teacher = new Client(h.app);
     await teacher.login(`t@${A.slug}.example.test`, 'long-enough-password', A.slug);
+    await acceptInitialPassword(teacher, 'long-enough-password');
     const ctrl = new Client(h.app);
     await ctrl.login(`c@${A.slug}.example.test`, 'long-enough-password', A.slug);
+    await acceptInitialPassword(ctrl, 'long-enough-password');
     const guardian = new Client(h.app);
     await guardian.login(`g@${A.slug}.example.test`, 'long-enough-password', A.slug);
+    await acceptInitialPassword(guardian, 'long-enough-password');
 
     const exam = (
       await ctrl.post('/exams', {
